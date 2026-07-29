@@ -1,0 +1,110 @@
+@import "tailwindcss";
+
+@theme {
+  --color-riverbed: #12161a;
+  --color-panel: #1a2126;
+  --color-panel-raised: #212a30;
+  --color-stone: #313c43;
+  --color-stone-soft: #232c32;
+  --color-sediment: #8b949c;
+  --color-sediment-dim: #5f6a71;
+  --color-parchment: #ece7da;
+  --color-gold: #e7b238;
+  --color-gold-dim: #6d5424;
+  --color-teal: #4fbeb0;
+  --color-teal-dim: #1d3532;
+  --color-rust: #dd6a44;
+  --color-signal: #7fa9c7;
+  --color-claim: #ab8bd6;
+
+  --font-display: "Space Grotesk", "Segoe UI", sans-serif;
+  --font-sans: "IBM Plex Sans", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+body {
+  background-color: var(--color-riverbed);
+  color: var(--color-parchment);
+}
+
+.sift-mesh {
+  background-image: radial-gradient(circle, rgba(236, 231, 218, 0.07) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.tree-scroll::-webkit-scrollbar,
+.ledger-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.tree-scroll::-webkit-scrollbar-track,
+.ledger-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.tree-scroll::-webkit-scrollbar-thumb,
+.ledger-scroll::-webkit-scrollbar-thumb {
+  background-color: var(--color-stone);
+  border-radius: 999px;
+  border: 2px solid var(--color-panel);
+}
+.tree-scroll::-webkit-scrollbar-thumb:hover,
+.ledger-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-sediment-dim);
+}
+
+@keyframes flash-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(231, 178, 56, 0.55);
+    background-color: rgba(231, 178, 56, 0.22);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(231, 178, 56, 0);
+    background-color: rgba(231, 178, 56, 0.14);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(231, 178, 56, 0);
+    background-color: rgba(231, 178, 56, 0.1);
+  }
+}
+
+.match-active {
+  animation: flash-pulse 1.1s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .match-active {
+    animation: none;
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.rise-in {
+  animation: rise-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rise-in {
+    animation: none;
+  }
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-gold);
+  outline-offset: 2px;
+}
