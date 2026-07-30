@@ -207,20 +207,73 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasData, deferredQuery, options.mode, options.caseSensitive, options.regex]);
 
-  // When find result changes, auto-expand ancestors and scroll to first match
+function getPathAncestors(pathStr: string): string[] {
+  const ancestors: string[] = ["$"];
+  if (pathStr === "$") return ancestors;
+  
+  let current = "$";
+  let i = 1;
+  while (i < pathStr.length) {
+    if (pathStr[i] === ".") {
+      const nextDot = pathStr.indexOf(".", i + 1);
+      const nextBracket = pathStr.indexOf("[", i + 1);
+      let next = -1;
+      if (nextDot !== -1 && nextBracket !== -1) next = Math.min(nextDot, nextBracket);
+      else next = nextDot !== -1 ? nextDot : nextBracket;
+      
+      if (next === -1) {
+        ancestors.push(pathStr);
+        break;
+      } else {
+        current = pathStr.substring(0, next);
+        ancestors.push(current);
+        i = next;
+      }
+    } else if (pathStr[i] === "[") {
+      const closeBracket = pathStr.indexOf("]", i + 1);
+      if (closeBracket === -1) break;
+      current = pathStr.substring(0, closeBracket + 1);
+      ancestors.push(current);
+      i = closeBracket + 1;
+    } else {
+      i++;
+    }
+  }
+  return ancestors;
+}
+
+  // When find result changes, scroll to first match and auto-expand if results are reasonably small (< 150)
   useEffect(() => {
-    if (findResult.matches.length) {
+    const matchesCount = findResult.matches.length;
+    if (matchesCount > 0) {
       setActiveIndex(0);
       setScrollToId(findResult.matches[0].pathStr);
+      
+      // Auto expand ALL matches only if the match set is small to prevent rendering freeze
+      if (matchesCount < 150 && findResult.autoExpand.size > 0) {
+        setExpanded((prev) => mergeSets(prev, findResult.autoExpand));
+      } else {
+        // Expand ONLY the first match's ancestors
+        const firstMatchPath = findResult.matches[0].pathStr;
+        const firstAncestors = new Set(getPathAncestors(firstMatchPath));
+        setExpanded((prev) => mergeSets(prev, firstAncestors));
+      }
     } else {
       setActiveIndex(-1);
       setScrollToId(null);
     }
-    if (findResult.autoExpand.size) {
-      setExpanded((prev) => mergeSets(prev, findResult.autoExpand));
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findResult]);
+
+  // When active index changes, make sure its ancestors are expanded so it can scroll into view
+  useEffect(() => {
+    if (activeIndex >= 0 && findResult.matches[activeIndex]) {
+      const activePath = findResult.matches[activeIndex].pathStr;
+      const activeAncestors = new Set(getPathAncestors(activePath));
+      setExpanded((prev) => mergeSets(prev, activeAncestors));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeIndex]);
 
   // ─── Handlers ────────────────────────────────────────────────────────────
 
