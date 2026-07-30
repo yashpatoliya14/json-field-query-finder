@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Header from "./components/Header";
 import SourceControls from "./components/SourceControls";
 import SearchControls from "./components/SearchControls";
@@ -24,10 +24,6 @@ function parseJson(text: string): { value: JsonValue | null; error: string | nul
   }
 }
 
-function byteSize(text: string): number {
-  return new TextEncoder().encode(text).length;
-}
-
 function mergeSets(a: Set<string>, b: Set<string>): Set<string> {
   let changed = false;
   const next = new Set(a);
@@ -42,8 +38,8 @@ function mergeSets(a: Set<string>, b: Set<string>): Set<string> {
 
 export default function App() {
   const [draftText, setDraftText] = useState(sampleJsonText);
-  const [committedText, setCommittedText] = useState(sampleJsonText);
   const [committed, setCommitted] = useState<JsonValue | null>(() => JSON.parse(sampleJsonText));
+  const [committedSize, setCommittedSize] = useState(() => new Blob([sampleJsonText]).size);
   const [parseError, setParseError] = useState<string | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
 
@@ -51,49 +47,74 @@ export default function App() {
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
 
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedQuery(query);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [query]);
+
   const [options, setOptions] = useState<SearchOptions>({
     mode: "both",
     caseSensitive: false,
     regex: false,
   });
   const [activeIndex, setActiveIndex] = useState(-1);
-  const [pendingScroll, setPendingScroll] = useState<string | null>(null);
+  const [scrollToId, setScrollToId] = useState<string | null>(null);
 
-  function applyText(text: string) {
-    const { value, error } = parseJson(text);
-    if (error) {
-      setParseError(error);
-      return;
-    }
-    setCommitted(value);
-    setCommittedText(text);
-    setParseError(null);
-  }
+  // Debounce applying JSON after paste — don't block the main thread on parse + tree computation
+  const applyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  function handleDraftChange(text: string) {
-    setDraftText(text);
-  }
+  const applyText = useCallback((text: string, immediate = false) => {
+    if (applyTimerRef.current) clearTimeout(applyTimerRef.current);
 
-  function handleSample() {
-    setDraftText(sampleJsonText);
-    applyText(sampleJsonText);
-  }
-
-  function handleClear() {
-    setDraftText("");
-    applyText("");
-  }
-
-  function handleFile(file: File) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const text = String(reader.result ?? "");
-      setDraftText(text);
-      applyText(text);
-      setEditorOpen(true);
+    const doApply = () => {
+      const { value, error } = parseJson(text);
+      if (error) {
+        setParseError(error);
+        return;
+      }
+      setCommitted(value);
+      setCommittedSize(new Blob([text]).size);
+      setParseError(null);
     };
-    reader.readAsText(file);
-  }
+
+    if (immediate) {
+      doApply();
+    } else {
+      applyTimerRef.current = setTimeout(doApply, 0);
+    }
+  }, []);
+
+  const handleDraftChange = useCallback((text: string) => {
+    setDraftText(text);
+  }, []);
+
+  const handleSample = useCallback(() => {
+    setDraftText(sampleJsonText);
+    applyText(sampleJsonText, true);
+  }, [applyText]);
+
+  const handleClear = useCallback(() => {
+    setDraftText("");
+    applyText("", true);
+  }, [applyText]);
+
+  const handleFile = useCallback(
+    (file: File) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const text = String(reader.result ?? "");
+        setDraftText(text);
+        applyText(text, true);
+        setEditorOpen(true);
+      };
+      reader.readAsText(file);
+    },
+    [applyText]
+  );
 
   // Reset expansion + selection whenever a new document is committed.
   useEffect(() => {
@@ -101,8 +122,8 @@ export default function App() {
   }, [committed]);
 
   const findResult = useMemo(
-    () => findMatches(committed, query, options),
-    [committed, query, options.mode, options.caseSensitive, options.regex]
+    () => findMatches(committed, debouncedQuery, options),
+    [committed, debouncedQuery, options.mode, options.caseSensitive, options.regex]
   );
 
   const matchMap = useMemo(() => {
@@ -110,15 +131,15 @@ export default function App() {
     return map;
   }, [findResult]);
 
-  const stats = useMemo(() => computeStats(committed, byteSize(committedText)), [committed, committedText]);
+  const stats = useMemo(() => computeStats(committed, committedSize), [committed, committedSize]);
 
   useEffect(() => {
     if (findResult.matches.length) {
       setActiveIndex(0);
-      setPendingScroll(findResult.matches[0].pathStr);
+      setScrollToId(findResult.matches[0].pathStr);
     } else {
       setActiveIndex(-1);
-      setPendingScroll(null);
+      setScrollToId(null);
     }
     if (findResult.autoExpand.size) {
       setExpanded((prev) => mergeSets(prev, findResult.autoExpand));
@@ -126,33 +147,27 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findResult]);
 
-  useEffect(() => {
-    if (!pendingScroll) return;
-    const el = document.getElementById(pendingScroll);
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-      setPendingScroll(null);
-    }
-  }, [expanded, pendingScroll]);
+  const goToMatch = useCallback(
+    (idx: number) => {
+      const n = findResult.matches.length;
+      if (!n) return;
+      const clamped = ((idx % n) + n) % n;
+      setActiveIndex(clamped);
+      setScrollToId(findResult.matches[clamped].pathStr);
+    },
+    [findResult.matches]
+  );
 
-  function goToMatch(idx: number) {
-    const n = findResult.matches.length;
-    if (!n) return;
-    const clamped = ((idx % n) + n) % n;
-    setActiveIndex(clamped);
-    setPendingScroll(findResult.matches[clamped].pathStr);
-  }
-
-  function toggleExpand(pathStr: string) {
+  const toggleExpand = useCallback((pathStr: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(pathStr)) next.delete(pathStr);
       else next.add(pathStr);
       return next;
     });
-  }
+  }, []);
 
-  function copyPath(pathStr: string) {
+  const copyPath = useCallback((pathStr: string) => {
     if (navigator.clipboard?.writeText) {
       navigator.clipboard.writeText(pathStr).catch(() => {});
     }
@@ -160,7 +175,27 @@ export default function App() {
     window.setTimeout(() => {
       setCopiedPath((p) => (p === pathStr ? null : p));
     }, 1400);
-  }
+  }, []);
+
+  const handleExpandAll = useCallback(() => {
+    setExpanded(allContainerPaths(committed));
+  }, [committed]);
+
+  const handleCollapseAll = useCallback(() => {
+    setExpanded(new Set());
+  }, []);
+
+  const handleToggleEditor = useCallback(() => {
+    setEditorOpen((v) => !v);
+  }, []);
+
+  const handleApply = useCallback(() => {
+    applyText(draftText, true);
+  }, [applyText, draftText]);
+
+  const handleScrollDone = useCallback(() => {
+    setScrollToId(null);
+  }, []);
 
   const activeId = activeIndex >= 0 ? findResult.matches[activeIndex]?.pathStr ?? null : null;
 
@@ -172,10 +207,10 @@ export default function App() {
         <aside className="flex w-full flex-col gap-3 lg:h-full lg:w-[360px] lg:shrink-0 lg:overflow-hidden">
           <SourceControls
             editorOpen={editorOpen}
-            onToggleEditor={() => setEditorOpen((v) => !v)}
+            onToggleEditor={handleToggleEditor}
             draftText={draftText}
             onDraftChange={handleDraftChange}
-            onApply={() => applyText(draftText)}
+            onApply={handleApply}
             onSample={handleSample}
             onClear={handleClear}
             onFile={handleFile}
@@ -213,12 +248,14 @@ export default function App() {
             root={committed}
             expanded={expanded}
             onToggle={toggleExpand}
-            onExpandAll={() => setExpanded(allContainerPaths(committed))}
-            onCollapseAll={() => setExpanded(new Set())}
+            onExpandAll={handleExpandAll}
+            onCollapseAll={handleCollapseAll}
             matchMap={matchMap}
             activeId={activeId}
             onCopyPath={copyPath}
             copiedPath={copiedPath}
+            scrollToId={scrollToId}
+            onScrollDone={handleScrollDone}
           />
         </section>
       </main>

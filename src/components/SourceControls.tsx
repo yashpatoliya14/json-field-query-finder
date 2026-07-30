@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useEffect } from "react";
 import { PenIcon, UploadIcon, XIcon } from "./icons";
 
 interface SourceControlsProps {
@@ -25,6 +25,42 @@ export default function SourceControls({
   parseError,
 }: SourceControlsProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Sync external draftText changes (sample load, clear, file upload) into the uncontrolled textarea
+  const lastExternalText = useRef(draftText);
+  useEffect(() => {
+    if (draftText !== lastExternalText.current) {
+      lastExternalText.current = draftText;
+      if (textareaRef.current) {
+        textareaRef.current.value = draftText;
+      }
+    }
+  }, [draftText]);
+
+  // Debounce propagating draftText changes to parent state during active typing/pasting
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    lastExternalText.current = val;
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+    debounceTimerRef.current = setTimeout(() => {
+      onDraftChange(val);
+    }, 200);
+  };
+
+  const handleApplyClick = () => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+    const currentVal = textareaRef.current ? textareaRef.current.value : draftText;
+    onDraftChange(currentVal);
+    onApply();
+  };
 
   return (
     <div className="rounded-lg border border-stone bg-panel">
@@ -78,12 +114,13 @@ export default function SourceControls({
       {editorOpen && (
         <div className="p-3">
           <textarea
-            value={draftText}
-            onChange={(e) => onDraftChange(e.target.value)}
+            ref={textareaRef}
+            defaultValue={draftText}
+            onChange={handleTextareaChange}
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                 e.preventDefault();
-                onApply();
+                handleApplyClick();
               }
             }}
             spellCheck={false}
@@ -94,7 +131,7 @@ export default function SourceControls({
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={onApply}
+                onClick={handleApplyClick}
                 className="rounded-md bg-teal/90 px-3 py-1.5 font-sans text-[12px] font-medium text-riverbed hover:bg-teal"
               >
                 Apply JSON

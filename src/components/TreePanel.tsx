@@ -1,5 +1,17 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { List, useListRef } from "react-window";
 import type { JsonValue, MatchRecord } from "../lib/types";
-import JsonNode from "./JsonNode";
+import { flattenTree } from "../lib/flattenTree";
+import type { TreeRowProps } from "./VirtualRow";
+import TreeRowComponentRaw from "./VirtualRow";
+
+// react-window v2 expects rowComponent to return ReactElement | null, but memo() returns ReactNode.
+// Cast to satisfy the type system while preserving memo behavior at runtime.
+const TreeRowComponent = TreeRowComponentRaw as unknown as (props: {
+  ariaAttributes: { "aria-posinset": number; "aria-setsize": number; role: "listitem" };
+  index: number;
+  style: React.CSSProperties;
+} & TreeRowProps) => React.ReactElement | null;
 
 interface TreePanelProps {
   root: JsonValue | null;
@@ -11,7 +23,11 @@ interface TreePanelProps {
   activeId: string | null;
   onCopyPath: (pathStr: string) => void;
   copiedPath: string | null;
+  scrollToId: string | null;
+  onScrollDone: () => void;
 }
+
+const ROW_HEIGHT = 24;
 
 export default function TreePanel({
   root,
@@ -23,9 +39,70 @@ export default function TreePanel({
   activeId,
   onCopyPath,
   copiedPath,
+  scrollToId,
+  onScrollDone,
 }: TreePanelProps) {
+  const listRef = useListRef(null);
+
+  // Flatten the tree into a virtual row list — only recomputes when root or expanded changes
+  const flatRows = useMemo(() => flattenTree(root, expanded), [root, expanded]);
+
+  // Build an index from id → row index for O(1) scroll-to
+  const idToIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    for (let i = 0; i < flatRows.length; i++) {
+      map.set(flatRows[i].id, i);
+    }
+    return map;
+  }, [flatRows]);
+
+  // Scroll to the target row when scrollToId changes
+  useEffect(() => {
+    if (!scrollToId || !listRef.current) return;
+    const idx = idToIndex.get(scrollToId);
+    if (idx !== undefined) {
+      listRef.current.scrollToRow({ index: idx, align: "center" });
+    }
+    onScrollDone();
+  }, [scrollToId, idToIndex, onScrollDone, listRef]);
+
+  const rowKey = useCallback(
+    (index: number) => flatRows[index].id,
+    [flatRows]
+  );
+
+  // rowProps passed to each row component instance
+  const rowProps: TreeRowProps = useMemo(
+    () => ({
+      flatRows,
+      matchMap,
+      activeId,
+      onToggle,
+      onCopyPath,
+      copiedPath,
+    }),
+    [flatRows, matchMap, activeId, onToggle, onCopyPath, copiedPath]
+  );
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerHeight, setContainerHeight] = useState<number>(400);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => {
+      if (el.clientHeight > 0) {
+        setContainerHeight(el.clientHeight);
+      }
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-stone bg-panel">
+    <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-stone bg-panel h-full">
       <div className="flex items-center justify-between border-b border-stone/70 px-3 py-2">
         <span className="font-sans text-[11px] font-medium uppercase tracking-[0.12em] text-sediment">
           Claim map
@@ -48,7 +125,7 @@ export default function TreePanel({
         </div>
       </div>
 
-      <div className="tree-scroll sift-mesh min-h-0 flex-1 overflow-auto rounded-b-lg bg-riverbed/40 p-4">
+      <div className="sift-mesh min-h-0 flex-1 rounded-b-lg bg-riverbed/40 p-4">
         {root === null || root === undefined ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 py-16 text-center">
             <p className="font-display text-lg text-parchment/80">No claim staked yet</p>
@@ -57,20 +134,20 @@ export default function TreePanel({
             </p>
           </div>
         ) : (
-          <JsonNode
-            nodeKey={null}
-            isIndex={false}
-            value={root}
-            path={[]}
-            depth={0}
-            isLast={true}
-            expanded={expanded}
-            onToggle={onToggle}
-            matchMap={matchMap}
-            activeId={activeId}
-            onCopyPath={onCopyPath}
-            copiedPath={copiedPath}
-          />
+          <div ref={containerRef} className="h-full w-full overflow-hidden">
+            <List<TreeRowProps>
+              listRef={listRef}
+              rowCount={flatRows.length}
+              rowHeight={ROW_HEIGHT}
+              rowComponent={TreeRowComponent}
+              rowProps={rowProps}
+              rowKey={rowKey}
+              height={containerHeight}
+              overscanCount={30}
+              className="tree-scroll"
+              style={{ height: containerHeight, willChange: "transform" }}
+            />
+          </div>
         )}
       </div>
     </div>

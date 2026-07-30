@@ -20,16 +20,19 @@ export function valueTypeOf(v: JsonValue): string {
   return typeof v;
 }
 
+
+export function appendPathSegment(basePathStr: string, key: string | number, isIndex: boolean): string {
+  if (!basePathStr) return "$";
+  if (isIndex) return `${basePathStr}[${key}]`;
+  const k = String(key);
+  return IDENT_RE.test(k) ? `${basePathStr}.${k}` : `${basePathStr}[${JSON.stringify(k)}]`;
+}
+
 export function formatPath(path: PathSegment[]): string {
   if (path.length === 0) return "$";
   let out = "$";
-  for (const seg of path) {
-    if (seg.isIndex) {
-      out += `[${seg.key}]`;
-    } else {
-      const k = String(seg.key);
-      out += IDENT_RE.test(k) ? `.${k}` : `[${JSON.stringify(k)}]`;
-    }
+  for (let i = 0; i < path.length; i++) {
+    out = appendPathSegment(out, path[i].key, path[i].isIndex);
   }
   return out;
 }
@@ -91,73 +94,151 @@ export function findMatches(
   if (root === null || root === undefined || !query) return result;
 
   let stopped = false;
+  const MAX_MATCHES = 10000;
 
-  function addAncestors(path: PathSegment[]) {
+  function addAncestors(pathStr: string) {
     result.autoExpand.add("$");
-    for (let i = 1; i <= path.length; i++) {
-      result.autoExpand.add(formatPath(path.slice(0, i)));
-    }
+    // Ancestors can be gathered from pathStr or built during walk
+    let p = "$";
+    result.autoExpand.add(p);
+    if (pathStr === "$") return;
+
+    // Simple ancestor parse for pathStr string
+    // e.g. "$[0].details.user"
+    // Since autoExpand needs all parent container path strings:
+    // We add them directly during walk!
   }
 
-  function walk(value: JsonValue, path: PathSegment[]) {
+  function walk(value: JsonValue, path: PathSegment[], pathStr: string, ancestorPathStrs: string[]) {
     if (stopped || !isContainer(value)) return;
+    if (result.matches.length >= MAX_MATCHES) {
+      result.error = `Showing first ${MAX_MATCHES.toLocaleString()} matches. Refine your query for more.`;
+      stopped = true;
+      return;
+    }
+
     const isArr = Array.isArray(value);
-    const entries: [string | number, JsonValue][] = isArr
-      ? (value as JsonValue[]).map((v, i) => [i, v] as [number, JsonValue])
-      : Object.entries(value as Record<string, JsonValue>);
 
-    for (const [k, v] of entries) {
-      if (stopped) return;
-      const seg: PathSegment = { key: k, isIndex: isArr };
-      const newPath = [...path, seg];
-      const matchedOn: MatchRecord["matchedOn"] = [];
+    if (isArr) {
+      const arr = value as JsonValue[];
+      const len = arr.length;
+      for (let i = 0; i < len; i++) {
+        if (stopped) return;
+        const v = arr[i];
+        const seg: PathSegment = { key: i, isIndex: true };
+        const newPath = [...path, seg];
+        const newPathStr = `${pathStr}[${i}]`;
+        const currentAncestors = [...ancestorPathStrs, pathStr];
+        const matchedOn: MatchRecord["matchedOn"] = [];
 
-      let keyRanges: Range[] = [];
-      if (opts.mode !== "values") {
-        const kr = getRanges(String(k), query, opts);
-        if (kr === "error") {
-          result.error = "That pattern isn't valid — check the regular expression.";
-          stopped = true;
-          return;
+        let keyRanges: Range[] = [];
+        if (opts.mode !== "values") {
+          const kr = getRanges(String(i), query, opts);
+          if (kr === "error") {
+            result.error = "That pattern isn't valid — check the regular expression.";
+            stopped = true;
+            return;
+          }
+          keyRanges = kr;
+          if (kr.length) matchedOn.push("key");
         }
-        keyRanges = kr;
-        if (kr.length) matchedOn.push("key");
-      }
 
-      let valueRanges: Range[] = [];
-      const container = isContainer(v);
-      if (!container && opts.mode !== "keys") {
-        const text = v === null ? "null" : String(v);
-        const vr = getRanges(text, query, opts);
-        if (vr === "error") {
-          result.error = "That pattern isn't valid — check the regular expression.";
-          stopped = true;
-          return;
+        let valueRanges: Range[] = [];
+        const container = isContainer(v);
+        if (!container && opts.mode !== "keys") {
+          const text = v === null ? "null" : String(v);
+          const vr = getRanges(text, query, opts);
+          if (vr === "error") {
+            result.error = "That pattern isn't valid — check the regular expression.";
+            stopped = true;
+            return;
+          }
+          valueRanges = vr;
+          if (vr.length) matchedOn.push("value");
         }
-        valueRanges = vr;
-        if (vr.length) matchedOn.push("value");
-      }
 
-      if (matchedOn.length) {
-        result.matches.push({
-          pathStr: formatPath(newPath),
-          path: newPath,
-          key: k,
-          isIndex: isArr,
-          value: v,
-          valueType: valueTypeOf(v),
-          matchedOn,
-          keyRanges,
-          valueRanges,
-        });
-        addAncestors(newPath);
-      }
+        if (matchedOn.length) {
+          result.matches.push({
+            pathStr: newPathStr,
+            path: newPath,
+            key: i,
+            isIndex: true,
+            value: v,
+            valueType: valueTypeOf(v),
+            matchedOn,
+            keyRanges,
+            valueRanges,
+          });
+          for (let a = 0; a < currentAncestors.length; a++) {
+            result.autoExpand.add(currentAncestors[a]);
+          }
+        }
 
-      if (container) walk(v, newPath);
+        if (container) walk(v, newPath, newPathStr, currentAncestors);
+      }
+    } else {
+      const obj = value as Record<string, JsonValue>;
+      const keys = Object.keys(obj);
+      const len = keys.length;
+      for (let i = 0; i < len; i++) {
+        if (stopped) return;
+        const k = keys[i];
+        const v = obj[k];
+        const seg: PathSegment = { key: k, isIndex: false };
+        const newPath = [...path, seg];
+        const newPathStr = appendPathSegment(pathStr, k, false);
+        const currentAncestors = [...ancestorPathStrs, pathStr];
+        const matchedOn: MatchRecord["matchedOn"] = [];
+
+        let keyRanges: Range[] = [];
+        if (opts.mode !== "values") {
+          const kr = getRanges(k, query, opts);
+          if (kr === "error") {
+            result.error = "That pattern isn't valid — check the regular expression.";
+            stopped = true;
+            return;
+          }
+          keyRanges = kr;
+          if (kr.length) matchedOn.push("key");
+        }
+
+        let valueRanges: Range[] = [];
+        const container = isContainer(v);
+        if (!container && opts.mode !== "keys") {
+          const text = v === null ? "null" : String(v);
+          const vr = getRanges(text, query, opts);
+          if (vr === "error") {
+            result.error = "That pattern isn't valid — check the regular expression.";
+            stopped = true;
+            return;
+          }
+          valueRanges = vr;
+          if (vr.length) matchedOn.push("value");
+        }
+
+        if (matchedOn.length) {
+          result.matches.push({
+            pathStr: newPathStr,
+            path: newPath,
+            key: k,
+            isIndex: false,
+            value: v,
+            valueType: valueTypeOf(v),
+            matchedOn,
+            keyRanges,
+            valueRanges,
+          });
+          for (let a = 0; a < currentAncestors.length; a++) {
+            result.autoExpand.add(currentAncestors[a]);
+          }
+        }
+
+        if (container) walk(v, newPath, newPathStr, currentAncestors);
+      }
     }
   }
 
-  walk(root, []);
+  walk(root, [], "$", []);
   return result;
 }
 
@@ -167,11 +248,21 @@ export function computeStats(root: JsonValue | null | undefined, sizeBytes: numb
 
   function walk(v: JsonValue, depth: number) {
     stats.nodes++;
-    stats.maxDepth = Math.max(stats.maxDepth, depth);
+    if (depth > stats.maxDepth) stats.maxDepth = depth;
     if (isContainer(v)) {
       stats.containers++;
-      const children = Array.isArray(v) ? v : Object.values(v);
-      children.forEach((child) => walk(child, depth + 1));
+      if (Array.isArray(v)) {
+        const len = v.length;
+        for (let i = 0; i < len; i++) {
+          walk(v[i], depth + 1);
+        }
+      } else {
+        const keys = Object.keys(v);
+        const len = keys.length;
+        for (let i = 0; i < len; i++) {
+          walk(v[keys[i]], depth + 1);
+        }
+      }
     } else {
       stats.leaves++;
     }
@@ -180,48 +271,87 @@ export function computeStats(root: JsonValue | null | undefined, sizeBytes: numb
   return stats;
 }
 
-export function allContainerPaths(root: JsonValue | null | undefined): Set<string> {
+export function allContainerPaths(root: JsonValue | null | undefined, maxCount = 20000): Set<string> {
   const set = new Set<string>();
   if (root === null || root === undefined) return set;
   set.add("$");
 
-  function walk(v: JsonValue, path: PathSegment[]) {
-    if (!isContainer(v)) return;
-    const isArr = Array.isArray(v);
-    const entries: [string | number, JsonValue][] = isArr
-      ? (v as JsonValue[]).map((val, i) => [i, val] as [number, JsonValue])
-      : Object.entries(v as Record<string, JsonValue>);
-    for (const [k, val] of entries) {
-      const newPath = [...path, { key: k, isIndex: isArr }];
-      if (isContainer(val)) {
-        set.add(formatPath(newPath));
-        walk(val, newPath);
+  let count = 1;
+
+  function walk(v: JsonValue, pathStr: string) {
+    if (!isContainer(v) || count >= maxCount) return;
+
+    if (Array.isArray(v)) {
+      const len = v.length;
+      for (let i = 0; i < len; i++) {
+        if (count >= maxCount) return;
+        const val = v[i];
+        if (isContainer(val)) {
+          const childPathStr = `${pathStr}[${i}]`;
+          set.add(childPathStr);
+          count++;
+          walk(val, childPathStr);
+        }
+      }
+    } else {
+      const keys = Object.keys(v);
+      const len = keys.length;
+      for (let i = 0; i < len; i++) {
+        if (count >= maxCount) return;
+        const k = keys[i];
+        const val = v[k];
+        if (isContainer(val)) {
+          const childPathStr = appendPathSegment(pathStr, k, false);
+          set.add(childPathStr);
+          count++;
+          walk(val, childPathStr);
+        }
       }
     }
   }
-  walk(root, []);
+  walk(root, "$");
   return set;
 }
 
-export function defaultExpanded(root: JsonValue | null | undefined, depthLimit = 1): Set<string> {
+export function defaultExpanded(root: JsonValue | null | undefined, depthLimit = 1, maxCount = 100): Set<string> {
   const set = new Set<string>();
   if (root === null || root === undefined) return set;
   set.add("$");
 
-  function walk(v: JsonValue, path: PathSegment[], depth: number) {
-    if (!isContainer(v) || depth > depthLimit) return;
-    const isArr = Array.isArray(v);
-    const entries: [string | number, JsonValue][] = isArr
-      ? (v as JsonValue[]).map((val, i) => [i, val] as [number, JsonValue])
-      : Object.entries(v as Record<string, JsonValue>);
-    for (const [k, val] of entries) {
-      const newPath = [...path, { key: k, isIndex: isArr }];
-      if (isContainer(val)) {
-        set.add(formatPath(newPath));
-        walk(val, newPath, depth + 1);
+  let count = 1;
+
+  function walk(v: JsonValue, pathStr: string, depth: number) {
+    if (!isContainer(v) || depth > depthLimit || count >= maxCount) return;
+
+    if (Array.isArray(v)) {
+      const len = v.length;
+      for (let i = 0; i < len; i++) {
+        if (count >= maxCount) return;
+        const val = v[i];
+        if (isContainer(val)) {
+          const childPathStr = `${pathStr}[${i}]`;
+          set.add(childPathStr);
+          count++;
+          walk(val, childPathStr, depth + 1);
+        }
+      }
+    } else {
+      const keys = Object.keys(v);
+      const len = keys.length;
+      for (let i = 0; i < len; i++) {
+        if (count >= maxCount) return;
+        const k = keys[i];
+        const val = v[k];
+        if (isContainer(val)) {
+          const childPathStr = appendPathSegment(pathStr, k, false);
+          set.add(childPathStr);
+          count++;
+          walk(val, childPathStr, depth + 1);
+        }
       }
     }
   }
-  walk(root, [], 0);
+
+  walk(root, "$", 0);
   return set;
 }
