@@ -77,6 +77,11 @@ body {
   animation: flash-pulse 1.1s ease-out;
 }
 
+.tree-node-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 24px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .match-active {
     animation: none;

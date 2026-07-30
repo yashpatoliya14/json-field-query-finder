@@ -5,6 +5,7 @@ import { CopyIcon } from "./icons";
 
 interface MatchLedgerProps {
   matches: MatchRecord[];
+  totalMatches?: number;
   activeIndex: number;
   onSelect: (index: number) => void;
   onCopyPath: (pathStr: string) => void;
@@ -14,6 +15,7 @@ interface MatchLedgerProps {
 
 export default function MatchLedger({
   matches,
+  totalMatches,
   activeIndex,
   onSelect,
   onCopyPath,
@@ -26,7 +28,9 @@ export default function MatchLedger({
         <span className="font-sans text-[11px] font-medium uppercase tracking-[0.12em] text-sediment">
           Ledger
         </span>
-        <span className="font-mono text-[11px] text-sediment-dim">{matches.length}</span>
+        <span className="font-mono text-[11px] text-sediment-dim">
+          {(totalMatches ?? matches.length).toLocaleString()}
+        </span>
       </div>
 
       {!hasQuery && (
@@ -44,6 +48,11 @@ export default function MatchLedger({
 
       {matches.length > 0 && (
         <ul className="ledger-scroll flex-1 overflow-y-auto p-1.5">
+          {(totalMatches ?? matches.length) > matches.length && (
+            <li className="mb-2 px-2.5 font-sans text-[11px] text-sediment-dim">
+              Showing first {matches.length.toLocaleString()} of {(totalMatches ?? matches.length).toLocaleString()} matches
+            </li>
+          )}
           {matches.map((m, i) => {
             const isActive = i === activeIndex;
             return (
