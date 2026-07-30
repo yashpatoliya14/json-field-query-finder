@@ -95,7 +95,7 @@ function JsonNode({
   const comma = !isLast ? "," : "";
 
   const rowBase =
-    "tree-node-row group relative flex items-start gap-1 rounded-[4px] px-1.5 -mx-1.5 py-[1px] font-mono text-[13px] leading-[1.55] hover:bg-panel-raised/60";
+    "group relative flex items-start gap-1 rounded-[4px] px-1.5 -mx-1.5 py-[1px] font-mono text-[13px] leading-[1.55] hover:bg-panel-raised/60";
   const rowState = match ? "bg-gold/[0.06]" : "";
   const rowActive = isActive ? "match-active ring-1 ring-gold/60" : "";
 

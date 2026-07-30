@@ -1,1 +1,0 @@
-(function(){"use strict";self.onmessage=s=>{try{const e=s.data.trim();if(!e){self.postMessage({ok:!0,value:null});return}const t=JSON.parse(e);self.postMessage({ok:!0,value:t})}catch(e){self.postMessage({ok:!1,error:e.message})}}})();

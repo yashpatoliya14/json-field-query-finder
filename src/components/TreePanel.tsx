@@ -3,7 +3,6 @@ import JsonNode from "./JsonNode";
 
 interface TreePanelProps {
   root: JsonValue | null;
-  isLoading?: boolean;
   expanded: Set<string>;
   onToggle: (pathStr: string) => void;
   onExpandAll: () => void;
@@ -16,7 +15,6 @@ interface TreePanelProps {
 
 export default function TreePanel({
   root,
-  isLoading = false,
   expanded,
   onToggle,
   onExpandAll,
@@ -51,12 +49,7 @@ export default function TreePanel({
       </div>
 
       <div className="tree-scroll sift-mesh min-h-0 flex-1 overflow-auto rounded-b-lg bg-riverbed/40 p-4">
-        {isLoading ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 py-16 text-center">
-            <div className="h-6 w-6 animate-spin rounded-full border-2 border-stone border-t-teal" aria-hidden />
-            <p className="font-sans text-[13px] text-sediment">Preparing claim map…</p>
-          </div>
-        ) : root === null || root === undefined ? (
+        {root === null || root === undefined ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 py-16 text-center">
             <p className="font-display text-lg text-parchment/80">No claim staked yet</p>
             <p className="max-w-xs font-sans text-[12.5px] leading-relaxed text-sediment">
