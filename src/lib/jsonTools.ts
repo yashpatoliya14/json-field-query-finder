@@ -49,22 +49,23 @@ export function shortPreview(v: JsonValue, max = 64): string {
   return text.length > max ? `${text.slice(0, max - 1)}\u2026` : text;
 }
 
-function getRanges(haystack: string, query: string, opts: SearchOptions): Range[] | "error" {
+function getRanges(
+  haystack: string,
+  query: string,
+  opts: SearchOptions,
+  compiledRe: RegExp | null
+): Range[] | "error" {
   if (!query) return [];
   if (opts.regex) {
-    let re: RegExp;
-    try {
-      re = new RegExp(query, opts.caseSensitive ? "g" : "gi");
-    } catch {
-      return "error";
-    }
+    if (!compiledRe) return "error";
+    compiledRe.lastIndex = 0; // reset state
     const ranges: Range[] = [];
     let guard = 0;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(haystack)) && guard < 2000) {
+    while ((m = compiledRe.exec(haystack)) && guard < 2000) {
       guard++;
       if (m[0].length === 0) {
-        re.lastIndex++;
+        compiledRe.lastIndex++;
         continue;
       }
       ranges.push([m.index, m.index + m[0].length]);
@@ -96,17 +97,15 @@ export function findMatches(
   let stopped = false;
   const MAX_MATCHES = 10000;
 
-  function addAncestors(pathStr: string) {
-    result.autoExpand.add("$");
-    // Ancestors can be gathered from pathStr or built during walk
-    let p = "$";
-    result.autoExpand.add(p);
-    if (pathStr === "$") return;
-
-    // Simple ancestor parse for pathStr string
-    // e.g. "$[0].details.user"
-    // Since autoExpand needs all parent container path strings:
-    // We add them directly during walk!
+  // Compile the RegExp once per search, instead of inside every getRanges call!
+  let compiledRe: RegExp | null = null;
+  if (opts.regex) {
+    try {
+      compiledRe = new RegExp(query, opts.caseSensitive ? "g" : "gi");
+    } catch {
+      result.error = "That pattern isn't valid — check the regular expression.";
+      return result;
+    }
   }
 
   function walk(value: JsonValue, path: PathSegment[], pathStr: string, ancestorPathStrs: string[]) {
@@ -133,7 +132,7 @@ export function findMatches(
 
         let keyRanges: Range[] = [];
         if (opts.mode !== "values") {
-          const kr = getRanges(String(i), query, opts);
+          const kr = getRanges(String(i), query, opts, compiledRe);
           if (kr === "error") {
             result.error = "That pattern isn't valid — check the regular expression.";
             stopped = true;
@@ -147,7 +146,7 @@ export function findMatches(
         const container = isContainer(v);
         if (!container && opts.mode !== "keys") {
           const text = v === null ? "null" : String(v);
-          const vr = getRanges(text, query, opts);
+          const vr = getRanges(text, query, opts, compiledRe);
           if (vr === "error") {
             result.error = "That pattern isn't valid — check the regular expression.";
             stopped = true;
@@ -192,7 +191,7 @@ export function findMatches(
 
         let keyRanges: Range[] = [];
         if (opts.mode !== "values") {
-          const kr = getRanges(k, query, opts);
+          const kr = getRanges(k, query, opts, compiledRe);
           if (kr === "error") {
             result.error = "That pattern isn't valid — check the regular expression.";
             stopped = true;
@@ -206,7 +205,7 @@ export function findMatches(
         const container = isContainer(v);
         if (!container && opts.mode !== "keys") {
           const text = v === null ? "null" : String(v);
-          const vr = getRanges(text, query, opts);
+          const vr = getRanges(text, query, opts, compiledRe);
           if (vr === "error") {
             result.error = "That pattern isn't valid — check the regular expression.";
             stopped = true;

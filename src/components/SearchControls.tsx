@@ -1,5 +1,6 @@
 import type { SearchMode, SearchOptions } from "../lib/types";
 import { CaretIcon, SearchIcon, XIcon } from "./icons";
+import { useRef } from "react";
 
 interface SearchControlsProps {
   query: string;
@@ -11,12 +12,13 @@ interface SearchControlsProps {
   onNext: () => void;
   onPrev: () => void;
   error: string | null;
+  searching: boolean;
 }
 
-const MODES: { id: SearchMode; label: string }[] = [
-  { id: "both", label: "Keys + values" },
-  { id: "keys", label: "Keys" },
-  { id: "values", label: "Values" },
+const MODES: { id: SearchMode; label: string; short: string }[] = [
+  { id: "both", label: "Keys + Values", short: "Both" },
+  { id: "keys", label: "Keys only", short: "Keys" },
+  { id: "values", label: "Values only", short: "Values" },
 ];
 
 export default function SearchControls({
@@ -29,12 +31,27 @@ export default function SearchControls({
   onNext,
   onPrev,
   error,
+  searching,
 }: SearchControlsProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const hasQuery = query.trim().length > 0;
+
   return (
-    <div className="rounded-lg border border-stone bg-panel p-3">
-      <div className="flex items-center gap-2 rounded-md border border-stone bg-riverbed px-2.5 py-2 focus-within:border-gold/60">
-        <SearchIcon className="h-4 w-4 shrink-0 text-sediment" />
+    <div className="search-panel rounded-xl border border-stone/80 bg-panel overflow-hidden">
+      {/* ── Search input row ── */}
+      <div className={`search-input-wrap flex items-center gap-2.5 px-3 py-2.5 transition-all duration-200 ${hasQuery ? "border-b border-stone/60" : ""}`}>
+        <div className="relative flex shrink-0">
+          <SearchIcon
+            className={`h-4 w-4 transition-colors duration-200 ${hasQuery ? "text-teal" : "text-sediment"}`}
+          />
+          {searching && (
+            <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-teal animate-ping" />
+          )}
+        </div>
+
         <input
+          ref={inputRef}
           value={query}
           onChange={(e) => onQueryChange(e.target.value)}
           onKeyDown={(e) => {
@@ -43,36 +60,76 @@ export default function SearchControls({
               if (e.shiftKey) onPrev();
               else onNext();
             }
+            if (e.key === "Escape" && query) {
+              e.preventDefault();
+              onQueryChange("");
+            }
           }}
           type="text"
-          placeholder="Search any field name or value…"
+          placeholder="Search keys and values…"
           className="w-full bg-transparent font-mono text-[13.5px] text-parchment outline-none placeholder:text-sediment-dim"
           aria-label="Search JSON fields and values"
+          spellCheck={false}
+          autoComplete="off"
         />
-        {query && (
-          <button
-            type="button"
-            onClick={() => onQueryChange("")}
-            aria-label="Clear search"
-            className="text-sediment hover:text-rust"
-          >
-            <XIcon className="h-3.5 w-3.5" />
-          </button>
-        )}
+
+        {/* Match counter badge — inline, no layout shift */}
+        <div className="flex shrink-0 items-center gap-1.5">
+          {hasQuery && !error && (
+            <span
+              className={`min-w-[38px] rounded-md px-2 py-0.5 text-center font-mono text-[11px] transition-all duration-200 ${
+                matchCount > 0
+                  ? "bg-gold/15 text-gold"
+                  : "bg-stone-soft text-sediment-dim"
+              }`}
+            >
+              {searching ? "…" : matchCount > 0 ? `${activeIndex + 1}/${matchCount}` : "0"}
+            </span>
+          )}
+          {query && (
+            <button
+              type="button"
+              onClick={() => {
+                onQueryChange("");
+                inputRef.current?.focus();
+              }}
+              aria-label="Clear search"
+              className="text-sediment-dim hover:text-rust transition-colors"
+            >
+              <XIcon className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
       </div>
 
-      {query && (
-        <div className="mt-2 flex items-center justify-between gap-2 font-mono text-[11.5px]">
-          <span className={error ? "text-rust" : matchCount ? "text-gold" : "text-sediment"}>
-            {error ? "Invalid pattern" : matchCount ? `${activeIndex + 1} of ${matchCount}` : "No matches"}
+      {/* ── Match nav + error ── */}
+      {hasQuery && (
+        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-stone/60">
+          <span
+            className={`font-mono text-[11.5px] transition-colors duration-200 ${
+              error
+                ? "text-rust"
+                : matchCount > 0
+                ? "text-parchment/70"
+                : "text-sediment"
+            }`}
+          >
+            {error
+              ? "⚠ Invalid regex"
+              : matchCount > 0
+              ? `${matchCount.toLocaleString()} match${matchCount === 1 ? "" : "es"}`
+              : searching
+              ? "Searching…"
+              : "No matches"}
           </span>
+
           {!error && matchCount > 0 && (
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-0.5">
               <button
                 type="button"
                 onClick={onPrev}
                 aria-label="Previous match"
-                className="rounded border border-stone p-1 text-sediment hover:border-gold hover:text-gold"
+                className="flex items-center justify-center rounded-md border border-stone/80 p-1.5 text-sediment transition-all hover:border-gold/60 hover:text-gold active:scale-95"
               >
                 <CaretIcon className="h-3 w-3 -rotate-90" />
               </button>
@@ -80,60 +137,76 @@ export default function SearchControls({
                 type="button"
                 onClick={onNext}
                 aria-label="Next match"
-                className="rounded border border-stone p-1 text-sediment hover:border-gold hover:text-gold"
+                className="flex items-center justify-center rounded-md border border-stone/80 p-1.5 text-sediment transition-all hover:border-gold/60 hover:text-gold active:scale-95"
               >
                 <CaretIcon className="h-3 w-3 rotate-90" />
               </button>
+              <span className="ml-1 font-mono text-[10px] text-sediment-dim">↵ / ⇧↵</span>
             </div>
           )}
         </div>
       )}
 
-      {error && <p className="mt-1.5 font-sans text-[11.5px] text-rust">{error}</p>}
-
-      <div className="mt-3 flex flex-wrap items-center gap-1.5">
-        <div className="flex overflow-hidden rounded-md border border-stone">
+      {/* ── Options ── */}
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2.5">
+        {/* Mode pill switcher */}
+        <div className="mode-switcher relative flex items-center overflow-hidden rounded-lg border border-stone/80 bg-riverbed">
           {MODES.map((m) => (
             <button
               key={m.id}
               type="button"
               onClick={() => onOptionsChange({ ...options, mode: m.id })}
-              className={`px-2.5 py-1 font-sans text-[11px] transition-colors ${
+              className={`relative z-10 px-2.5 py-1 font-sans text-[11px] transition-all duration-200 ${
                 options.mode === m.id
-                  ? "bg-teal/20 text-teal"
-                  : "text-sediment hover:bg-panel-raised hover:text-parchment"
+                  ? "text-teal font-medium"
+                  : "text-sediment hover:text-parchment"
               }`}
             >
-              {m.label}
+              {/* Active indicator */}
+              {options.mode === m.id && (
+                <span
+                  className="absolute inset-0 rounded-md bg-teal/15 border border-teal/30"
+                  style={{ zIndex: -1 }}
+                />
+              )}
+              {m.short}
             </button>
           ))}
         </div>
+
+        {/* Case sensitivity toggle */}
         <button
           type="button"
           onClick={() => onOptionsChange({ ...options, caseSensitive: !options.caseSensitive })}
           aria-pressed={options.caseSensitive}
-          title="Match case"
-          className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
+          title="Match case (Alt+C)"
+          className={`rounded-lg border px-2.5 py-1 font-mono text-[11.5px] font-semibold tracking-tight transition-all duration-200 ${
             options.caseSensitive
-              ? "border-gold/60 text-gold"
-              : "border-stone text-sediment hover:border-teal hover:text-teal"
+              ? "border-gold/50 bg-gold/10 text-gold shadow-[0_0_8px_rgba(231,178,56,0.15)]"
+              : "border-stone/80 text-sediment hover:border-teal/50 hover:text-teal"
           }`}
         >
           Aa
         </button>
+
+        {/* Regex toggle */}
         <button
           type="button"
           onClick={() => onOptionsChange({ ...options, regex: !options.regex })}
           aria-pressed={options.regex}
-          title="Use regular expression"
-          className={`rounded-md border px-2 py-1 font-mono text-[11px] transition-colors ${
+          title="Use regular expression (Alt+R)"
+          className={`rounded-lg border px-2.5 py-1 font-mono text-[11.5px] font-semibold transition-all duration-200 ${
             options.regex
-              ? "border-gold/60 text-gold"
-              : "border-stone text-sediment hover:border-teal hover:text-teal"
+              ? "border-claim/50 bg-claim/10 text-claim shadow-[0_0_8px_rgba(171,139,214,0.15)]"
+              : "border-stone/80 text-sediment hover:border-teal/50 hover:text-teal"
           }`}
         >
           .*
         </button>
+
+        {error && (
+          <p className="w-full font-sans text-[11px] text-rust">{error}</p>
+        )}
       </div>
     </div>
   );

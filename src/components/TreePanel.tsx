@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { List, useListRef } from "react-window";
-import type { JsonValue, MatchRecord } from "../lib/types";
-import { flattenTree } from "../lib/flattenTree";
+import type { MatchRecord } from "../lib/types";
+import type { VirtualRow } from "../lib/flattenTree";
 import type { TreeRowProps } from "./VirtualRow";
 import TreeRowComponentRaw from "./VirtualRow";
 
@@ -13,9 +13,10 @@ const TreeRowComponent = TreeRowComponentRaw as unknown as (props: {
   style: React.CSSProperties;
 } & TreeRowProps) => React.ReactElement | null;
 
+
 interface TreePanelProps {
-  root: JsonValue | null;
-  expanded: Set<string>;
+  hasData: boolean;
+  flatRows: VirtualRow[];
   onToggle: (pathStr: string) => void;
   onExpandAll: () => void;
   onCollapseAll: () => void;
@@ -30,8 +31,8 @@ interface TreePanelProps {
 const ROW_HEIGHT = 24;
 
 export default function TreePanel({
-  root,
-  expanded,
+  hasData,
+  flatRows,
   onToggle,
   onExpandAll,
   onCollapseAll,
@@ -43,9 +44,6 @@ export default function TreePanel({
   onScrollDone,
 }: TreePanelProps) {
   const listRef = useListRef(null);
-
-  // Flatten the tree into a virtual row list — only recomputes when root or expanded changes
-  const flatRows = useMemo(() => flattenTree(root, expanded), [root, expanded]);
 
   // Build an index from id → row index for O(1) scroll-to
   const idToIndex = useMemo(() => {
@@ -126,7 +124,7 @@ export default function TreePanel({
       </div>
 
       <div className="sift-mesh min-h-0 flex-1 rounded-b-lg bg-riverbed/40 p-4">
-        {root === null || root === undefined ? (
+        {!hasData ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 py-16 text-center">
             <p className="font-display text-lg text-parchment/80">No claim staked yet</p>
             <p className="max-w-xs font-sans text-[12.5px] leading-relaxed text-sediment">

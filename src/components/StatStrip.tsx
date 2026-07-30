@@ -6,19 +6,37 @@ function fmtBytes(n: number) {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const STAT_CONFIG: {
+  key: keyof Omit<JsonStats, "nodes">;
+  label: string;
+  accent: string;
+  bg: string;
+}[] = [
+  { key: "containers", label: "containers", accent: "text-teal", bg: "bg-teal/10" },
+  { key: "leaves",     label: "leaves",     accent: "text-signal", bg: "bg-signal/10" },
+  { key: "maxDepth",   label: "depth",      accent: "text-claim",  bg: "bg-claim/10" },
+  { key: "sizeBytes",  label: "size",       accent: "text-gold",   bg: "bg-gold/10" },
+];
+
+function getValue(key: keyof Omit<JsonStats, "nodes">, stats: JsonStats): string {
+  if (key === "sizeBytes") return fmtBytes(stats.sizeBytes);
+  return stats[key].toLocaleString();
+}
+
 export default function StatStrip({ stats }: { stats: JsonStats }) {
-  const items: [string, string][] = [
-    ["containers", stats.containers.toLocaleString()],
-    ["leaves", stats.leaves.toLocaleString()],
-    ["depth", stats.maxDepth.toLocaleString()],
-    ["size", fmtBytes(stats.sizeBytes)],
-  ];
   return (
     <div className="grid grid-cols-4 gap-1.5">
-      {items.map(([label, value]) => (
-        <div key={label} className="rounded-md border border-stone bg-panel px-2 py-1.5 text-center">
-          <div className="font-mono text-[13px] text-parchment">{value}</div>
-          <div className="mt-0.5 font-sans text-[9.5px] uppercase tracking-[0.1em] text-sediment-dim">
+      {STAT_CONFIG.map(({ key, label, accent, bg }) => (
+        <div
+          key={label}
+          className={`group relative overflow-hidden rounded-lg border border-stone/80 bg-panel px-2 py-2 text-center transition-all hover:border-stone`}
+        >
+          {/* Subtle accent bar on top */}
+          <div className={`absolute inset-x-0 top-0 h-[2px] ${bg} opacity-60`} />
+          <div className={`font-mono text-[13px] font-medium ${accent}`}>
+            {getValue(key, stats)}
+          </div>
+          <div className="mt-0.5 font-sans text-[9px] uppercase tracking-[0.12em] text-sediment-dim">
             {label}
           </div>
         </div>

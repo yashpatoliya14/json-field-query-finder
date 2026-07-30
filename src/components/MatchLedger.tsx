@@ -12,9 +12,10 @@ interface MatchLedgerProps {
   onCopyPath: (pathStr: string) => void;
   copiedPath: string | null;
   hasQuery: boolean;
+  searching: boolean;
 }
 
-const MATCH_ROW_HEIGHT = 64;
+const MATCH_ROW_HEIGHT = 68;
 
 interface MatchRowProps {
   matches: MatchRecord[];
@@ -23,6 +24,15 @@ interface MatchRowProps {
   onCopyPath: (pathStr: string) => void;
   copiedPath: string | null;
 }
+
+const TYPE_CHIP: Record<string, { label: string; cls: string }> = {
+  string:  { label: "str",  cls: "bg-parchment/10 text-parchment/80" },
+  number:  { label: "num",  cls: "bg-signal/15 text-signal" },
+  boolean: { label: "bool", cls: "bg-claim/15 text-claim" },
+  null:    { label: "null", cls: "bg-sediment-dim/20 text-sediment" },
+  array:   { label: "[ ]",  cls: "bg-rust/15 text-rust" },
+  object:  { label: "{ }",  cls: "bg-teal-dim text-teal" },
+};
 
 function MatchRowComponentFn({
   index,
@@ -39,21 +49,33 @@ function MatchRowComponentFn({
   const m = matches[index];
   const isActive = index === activeIndex;
   const isCopied = copiedPath === m.pathStr;
+  const chip = TYPE_CHIP[m.valueType] ?? TYPE_CHIP["string"];
+
+  // Shorten path for display — show last 2 segments
+  const displayPath = m.pathStr.length > 44
+    ? "…" + m.pathStr.slice(-43)
+    : m.pathStr;
 
   return (
-    <li style={style}>
+    <li style={style} className="px-1.5 py-0.5">
       <button
         type="button"
         onClick={() => onSelect(index)}
-        className={`group mb-1 flex w-full flex-col gap-1 rounded-md border px-2.5 py-2 text-left transition-colors ${
+        className={`group flex w-full flex-col gap-1 rounded-lg border px-2.5 py-2 text-left transition-all duration-150 ${
           isActive
-            ? "border-gold/60 bg-gold/[0.08]"
-            : "border-transparent hover:border-stone hover:bg-panel-raised/60"
+            ? "border-gold/50 bg-gold/[0.07] shadow-[0_0_0_1px_rgba(231,178,56,0.15)]"
+            : "border-transparent bg-riverbed/40 hover:border-stone/80 hover:bg-panel-raised/50"
         }`}
         style={{ height: MATCH_ROW_HEIGHT - 4 }}
       >
+        {/* Path row */}
         <div className="flex items-center justify-between gap-2">
-          <span className="truncate font-mono text-[11px] text-teal">{m.pathStr}</span>
+          <span
+            className="truncate font-mono text-[11px] text-teal/90 group-hover:text-teal"
+            title={m.pathStr}
+          >
+            {displayPath}
+          </span>
           <button
             type="button"
             onClick={(e) => {
@@ -61,32 +83,36 @@ function MatchRowComponentFn({
               onCopyPath(m.pathStr);
             }}
             aria-label="Copy path"
-            className="shrink-0 text-sediment-dim opacity-0 hover:text-teal group-hover:opacity-100"
+            className="shrink-0 opacity-0 transition-all group-hover:opacity-100"
           >
             {isCopied ? (
-              <span className="font-mono text-[10px] text-teal">copied</span>
+              <span className="font-mono text-[10px] text-teal">✓ copied</span>
             ) : (
-              <CopyIcon className="h-3 w-3" />
+              <CopyIcon className="h-3 w-3 text-sediment-dim hover:text-teal" />
             )}
           </button>
         </div>
+
+        {/* Key match row */}
         {m.matchedOn.includes("key") && (
-          <div className="flex items-center gap-1.5 font-mono text-[12px]">
-            <span className="rounded bg-teal-dim px-1 py-[1px] text-[9.5px] uppercase tracking-wide text-teal">
+          <div className="flex items-center gap-1.5 overflow-hidden">
+            <span className="shrink-0 rounded bg-teal-dim px-1 py-[1px] font-mono text-[9px] uppercase tracking-wide text-teal">
               key
             </span>
-            <span className="truncate text-teal/90">
+            <span className="truncate font-mono text-[11.5px] text-teal/80">
               <Highlight text={String(m.key)} ranges={m.keyRanges} />
             </span>
           </div>
         )}
+
+        {/* Value match row */}
         {m.matchedOn.includes("value") && (
-          <div className="flex items-center gap-1.5 font-mono text-[12.5px]">
-            <span className="rounded bg-stone-soft px-1 py-[1px] text-[9.5px] uppercase tracking-wide text-sediment">
-              {m.valueType}
+          <div className="flex items-center gap-1.5 overflow-hidden">
+            <span className={`shrink-0 rounded px-1 py-[1px] font-mono text-[9px] uppercase tracking-wide ${chip.cls}`}>
+              {chip.label}
             </span>
-            <span className="truncate text-parchment/90">
-              <Highlight text={shortPreview(m.value, 48)} ranges={m.valueRanges} />
+            <span className="truncate font-mono text-[11.5px] text-parchment/80">
+              <Highlight text={shortPreview(m.value, 52)} ranges={m.valueRanges} />
             </span>
           </div>
         )}
@@ -97,7 +123,7 @@ function MatchRowComponentFn({
 
 const MatchRowComponentMemo = memo(MatchRowComponentFn);
 
-// Cast to satisfy react-window v2's strict type that expects ReactElement | null return
+// Cast to satisfy react-window v2's strict type
 const MatchRowComponent = MatchRowComponentMemo as unknown as (props: {
   ariaAttributes: { "aria-posinset": number; "aria-setsize": number; role: "listitem" };
   index: number;
@@ -111,10 +137,10 @@ export default function MatchLedger({
   onCopyPath,
   copiedPath,
   hasQuery,
+  searching,
 }: MatchLedgerProps) {
   const listRef = useListRef(null);
 
-  // Scroll active match into view
   useEffect(() => {
     if (activeIndex >= 0 && listRef.current) {
       listRef.current.scrollToRow({ index: activeIndex, align: "center" });
@@ -127,40 +153,60 @@ export default function MatchLedger({
   );
 
   const rowProps: MatchRowProps = useMemo(
-    () => ({
-      matches,
-      activeIndex,
-      onSelect,
-      onCopyPath,
-      copiedPath,
-    }),
+    () => ({ matches, activeIndex, onSelect, onCopyPath, copiedPath }),
     [matches, activeIndex, onSelect, onCopyPath, copiedPath]
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-stone bg-panel h-full">
-      <div className="flex items-center justify-between border-b border-stone/70 px-3 py-2">
-        <span className="font-sans text-[11px] font-medium uppercase tracking-[0.12em] text-sediment">
-          Ledger
+    <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-stone/80 bg-panel h-full overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-stone/60 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <span className="font-sans text-[11px] font-medium uppercase tracking-[0.12em] text-sediment">
+            Matches
+          </span>
+          {searching && (
+            <span className="h-1.5 w-1.5 rounded-full bg-teal animate-ping" />
+          )}
+        </div>
+        <span
+          className={`rounded-md px-2 py-0.5 font-mono text-[11px] transition-all duration-300 ${
+            matches.length > 0
+              ? "bg-gold/10 text-gold"
+              : "text-sediment-dim"
+          }`}
+        >
+          {matches.length > 0 ? matches.length.toLocaleString() : "—"}
         </span>
-        <span className="font-mono text-[11px] text-sediment-dim">{matches.length}</span>
       </div>
 
+      {/* Empty states */}
       {!hasQuery && (
-        <div className="flex flex-1 items-center px-3 py-6 text-center font-sans text-[12px] leading-relaxed text-sediment-dim">
-          Every field or value you find gets logged here with its exact path — type in the search bar to
-          start filling the ledger.
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-8 text-center">
+          <svg viewBox="0 0 24 24" className="h-8 w-8 text-stone" fill="none" stroke="currentColor" strokeWidth="1.2">
+            <circle cx="11" cy="11" r="7" /><path d="M16.5 16.5l4 4" strokeLinecap="round"/>
+          </svg>
+          <p className="font-sans text-[12px] leading-relaxed text-sediment-dim">
+            Type in the search bar to find matching fields and values
+          </p>
         </div>
       )}
 
-      {hasQuery && matches.length === 0 && (
-        <div className="flex flex-1 items-center px-3 py-6 text-center font-sans text-[12px] leading-relaxed text-sediment-dim">
-          Nothing turned up. Try a shorter term, switch modes, or toggle case sensitivity.
+      {hasQuery && !searching && matches.length === 0 && (
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-8 text-center">
+          <svg viewBox="0 0 24 24" className="h-8 w-8 text-stone" fill="none" stroke="currentColor" strokeWidth="1.2">
+            <circle cx="11" cy="11" r="7" /><path d="M16.5 16.5l4 4" strokeLinecap="round"/>
+            <path d="M9 9l4 4M13 9l-4 4" strokeLinecap="round"/>
+          </svg>
+          <p className="font-sans text-[12px] text-sediment-dim">
+            Nothing matched — try a different term
+          </p>
         </div>
       )}
 
+      {/* Results list */}
       {matches.length > 0 && (
-        <div className="min-h-0 flex-1 p-1.5">
+        <div className="min-h-0 flex-1">
           <List<MatchRowProps>
             listRef={listRef}
             rowCount={matches.length}
@@ -168,7 +214,7 @@ export default function MatchLedger({
             rowComponent={MatchRowComponent}
             rowProps={rowProps}
             rowKey={rowKey}
-            overscanCount={10}
+            overscanCount={12}
             className="ledger-scroll"
             style={{ height: "100%" }}
           />
