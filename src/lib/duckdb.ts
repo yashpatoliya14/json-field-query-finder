@@ -3,21 +3,43 @@ import * as duckdb from "@duckdb/duckdb-wasm";
 let db: duckdb.AsyncDuckDB | null = null;
 let conn: duckdb.AsyncDuckDBConnection | null = null;
 
+/**
+ * Build a bundle that points to same-origin assets instead of jsDelivr CDN.
+ *
+ * The browser blocks cross-origin Workers (COEP + browser security policy),
+ * so we cannot use getJsDelivrBundles() directly. Instead, the .wasm and
+ * .worker.js files are served from /public/duckdb/ — same origin, no CORS.
+ *
+ * selectBundle still runs its feature-detection (wasmExceptions, wasmSIMD, …)
+ * and picks the best bundle; we just swap the CDN URLs for local ones.
+ */
+function getLocalBundles(): duckdb.DuckDBBundles {
+  const base = "/duckdb";
+  return {
+    mvp: {
+      mainModule: `${base}/duckdb-mvp.wasm`,
+      mainWorker: `${base}/duckdb-browser-mvp.worker.js`,
+    },
+    eh: {
+      mainModule: `${base}/duckdb-eh.wasm`,
+      mainWorker: `${base}/duckdb-browser-eh.worker.js`,
+    },
+  };
+}
+
 export async function initDuckDB() {
   if (db && conn) return { db, conn };
 
-  // Select the appropriate bundle from jsDelivr CDN (fast, robust, requires no Vite configuration)
-  const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
-  const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
+  const bundle = await duckdb.selectBundle(getLocalBundles());
 
-  // Instantiate worker
+  // mainWorker is now same-origin — Worker() constructor succeeds under COEP.
   const worker = new Worker(bundle.mainWorker!);
-  const logger = new duckdb.ConsoleLogger();
-  
+  const logger = new duckdb.VoidLogger();
+
   db = new duckdb.AsyncDuckDB(logger, worker);
   await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
   conn = await db.connect();
-  
+
   return { db, conn };
 }
 
@@ -27,8 +49,6 @@ export async function initDuckDB() {
 export async function registerFileInDuckDB(file: File | Blob, name = "sift_data.json") {
   const { db } = await initDuckDB();
   if (!db) throw new Error("DuckDB failed to initialize");
-
-  // Register the file as a local file in DuckDB's virtual filesystem (VFS)
   await db.registerFileBuffer(name, new Uint8Array(await file.arrayBuffer()));
 }
 
@@ -40,18 +60,12 @@ export async function queryDuckDB(sql: string): Promise<Record<string, any>[]> {
   if (!conn) throw new Error("DuckDB connection not active");
 
   const result = await conn.query(sql);
-  
-  // Convert Arrow table results into standard JSON objects
+
   return result.toArray().map((row) => {
     const obj: Record<string, any> = {};
     const map = row.toJSON();
     for (const [key, val] of Object.entries(map)) {
-      // Handle BigInt conversion so we don't crash JSON.stringify
-      if (typeof val === "bigint") {
-        obj[key] = Number(val);
-      } else {
-        obj[key] = val;
-      }
+      obj[key] = typeof val === "bigint" ? Number(val) : val;
     }
     return obj;
   });

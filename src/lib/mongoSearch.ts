@@ -14,25 +14,25 @@ interface FlatNodeRow {
  */
 export function parseMongoQuery(text: string): Record<string, any> | null {
   const trimmed = text.trim();
-  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
-    return null;
-  }
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
   try {
+    // eslint-disable-next-line no-new-func
     const fn = new Function(`return (${trimmed});`);
     const val = fn();
-    if (val && typeof val === "object" && !Array.isArray(val)) {
-      return val;
-    }
+    if (val && typeof val === "object" && !Array.isArray(val)) return val;
     return null;
   } catch {
-    return null; // Fall back to simple text/regex search on parse failure
+    return null;
   }
 }
 
 /**
  * Translates a search term (or parsed MongoDB query) into a DuckDB SQL WHERE clause.
  */
-export function buildSearchSql(query: string, opts: SearchOptions): { sql: string; isMongo: boolean; error: string | null } {
+export function buildSearchSql(
+  query: string,
+  opts: SearchOptions
+): { sql: string; isMongo: boolean; error: string | null } {
   const trimmed = query.trim();
   const mongoQuery = parseMongoQuery(trimmed);
 
@@ -40,28 +40,24 @@ export function buildSearchSql(query: string, opts: SearchOptions): { sql: strin
     try {
       const sqlParts: string[] = [];
       for (const [key, value] of Object.entries(mongoQuery)) {
-        // Dot notation matching: user.name -> pathStr REGEXP '\.user\.name$'
-        // Escaping dots for regex path matching
         const escapedKey = key.replace(/\./g, "\\.");
-        const pathCondition = `pathStr REGEXP '\\\\.${escapedKey}$'`;
+        const pathCondition = `pathStr REGEXP '\\.${escapedKey}$'`;
 
         if (value instanceof RegExp) {
-          const pattern = value.source;
-          const flags = value.flags;
-          const ignoreCase = flags.includes("i") ? "(?i)" : "";
+          const pattern = value.source.replace(/'/g, "''");
+          const ignoreCase = value.flags.includes("i") ? "(?i)" : "";
           sqlParts.push(`(${pathCondition} AND value REGEXP '${ignoreCase}${pattern}')`);
         } else if (value && typeof value === "object" && !Array.isArray(value)) {
-          // Operator object, e.g. { $gt: 20 } or { $regex: 'alice', $options: 'i' }
           const opParts: string[] = [];
           for (const [op, val] of Object.entries(value)) {
             if (op === "$regex") {
               const options = (value as any).$options || "";
               const ignoreCase = options.includes("i") ? "(?i)" : "";
-              opParts.push(`value REGEXP '${ignoreCase}${val}'`);
+              const escaped = String(val).replace(/'/g, "''");
+              opParts.push(`value REGEXP '${ignoreCase}${escaped}'`);
             } else if (op === "$options") {
               continue;
             } else {
-              // $gt, $gte, $lt, $lte, $ne, $eq
               let sqlOp = "=";
               if (op === "$gt") sqlOp = ">";
               else if (op === "$gte") sqlOp = ">=";
@@ -81,7 +77,6 @@ export function buildSearchSql(query: string, opts: SearchOptions): { sql: strin
             sqlParts.push(`(${pathCondition} AND ${opParts.join(" AND ")})`);
           }
         } else {
-          // Primitive exact match
           const escapedVal = String(value).replace(/'/g, "''");
           sqlParts.push(`(${pathCondition} AND value = '${escapedVal}')`);
         }
@@ -96,10 +91,16 @@ export function buildSearchSql(query: string, opts: SearchOptions): { sql: strin
     }
   }
 
-  // Fall back to standard SQL search (using REGEXP or LIKE)
+  // ── Plain text / regex search ────────────────────────────────────────────
   const escapedQuery = trimmed.replace(/'/g, "''");
 
   if (opts.regex) {
+    // Validate the regex before sending to DuckDB (DuckDB errors are opaque)
+    try {
+      new RegExp(trimmed);
+    } catch {
+      return { sql: "1=0", isMongo: false, error: "That pattern isn't valid — check the regular expression." };
+    }
     const ignoreCase = opts.caseSensitive ? "" : "(?i)";
     const keyMatch = `key REGEXP '${ignoreCase}${escapedQuery}'`;
     const valueMatch = `value REGEXP '${ignoreCase}${escapedQuery}'`;
@@ -107,21 +108,20 @@ export function buildSearchSql(query: string, opts: SearchOptions): { sql: strin
     if (opts.mode === "keys") return { sql: keyMatch, isMongo: false, error: null };
     if (opts.mode === "values") return { sql: valueMatch, isMongo: false, error: null };
     return { sql: `(${keyMatch} OR ${valueMatch})`, isMongo: false, error: null };
-  } else {
-    // Substring match using ILIKE (case-insensitive) or LIKE (case-sensitive)
-    const op = opts.caseSensitive ? "LIKE" : "ILIKE";
-    const keyMatch = `key ${op} '%${escapedQuery}%'`;
-    const valueMatch = `value ${op} '%${escapedQuery}%'`;
-
-    if (opts.mode === "keys") return { sql: keyMatch, isMongo: false, error: null };
-    if (opts.mode === "values") return { sql: valueMatch, isMongo: false, error: null };
-    return { sql: `(${keyMatch} OR ${valueMatch})`, isMongo: false, error: null };
   }
+
+  // Substring: ILIKE is case-insensitive, LIKE is case-sensitive
+  const op = opts.caseSensitive ? "LIKE" : "ILIKE";
+  const keyMatch = `key ${op} '%${escapedQuery}%'`;
+  const valueMatch = `value ${op} '%${escapedQuery}%'`;
+
+  if (opts.mode === "keys") return { sql: keyMatch, isMongo: false, error: null };
+  if (opts.mode === "values") return { sql: valueMatch, isMongo: false, error: null };
+  return { sql: `(${keyMatch} OR ${valueMatch})`, isMongo: false, error: null };
 }
 
-/**
- * Extracts highlighting match ranges inside Javascript.
- */
+// ─── Highlight range extraction (runs only on matched rows) ──────────────────
+
 function getHighlightRanges(text: string, query: string, opts: SearchOptions): Range[] {
   if (!query) return [];
   if (opts.regex) {
@@ -132,10 +132,7 @@ function getHighlightRanges(text: string, query: string, opts: SearchOptions): R
       let guard = 0;
       while ((m = re.exec(text)) && guard < 100) {
         guard++;
-        if (m[0].length === 0) {
-          re.lastIndex++;
-          continue;
-        }
+        if (m[0].length === 0) { re.lastIndex++; continue; }
         ranges.push([m.index, m.index + m[0].length]);
       }
       return ranges;
@@ -157,7 +154,8 @@ function getHighlightRanges(text: string, query: string, opts: SearchOptions): R
 }
 
 /**
- * Maps the flat rows returned from DuckDB back into our MatchRecord format.
+ * Maps the flat rows returned from DuckDB back into MatchRecord format,
+ * computing highlight ranges only for the matched subset.
  */
 export function mapDuckDbRowsToMatches(
   rows: FlatNodeRow[],
@@ -173,48 +171,34 @@ export function mapDuckDbRowsToMatches(
     const isIndex = Boolean(r.isIndex);
     const key = isIndex ? Number(r.key) : r.key;
 
-    // Convert values back to native JS types
+    // Reconstruct native JS value
     let nativeValue: any = r.value;
-    if (r.valueType === "number") {
-      nativeValue = Number(r.value);
-    } else if (r.valueType === "boolean") {
-      nativeValue = r.value === "true";
-    } else if (r.valueType === "null") {
-      nativeValue = null;
-    }
+    if (r.valueType === "number") nativeValue = Number(r.value);
+    else if (r.valueType === "boolean") nativeValue = r.value === "true";
+    else if (r.valueType === "null") nativeValue = null;
 
-    // Determine what matched
     const matchedOn: MatchRecord["matchedOn"] = [];
     let keyRanges: Range[] = [];
     let valueRanges: Range[] = [];
 
     if (isMongo) {
-      // In Mongo mode, both the key path and value are highlighted normally
       matchedOn.push("value");
     } else {
       if (opts.mode !== "values") {
         const kr = getHighlightRanges(String(key), queryText, opts);
-        if (kr.length > 0) {
-          matchedOn.push("key");
-          keyRanges = kr;
-        }
+        if (kr.length > 0) { matchedOn.push("key"); keyRanges = kr; }
       }
       if (opts.mode !== "keys" && r.valueType !== "object" && r.valueType !== "array") {
         const vr = getHighlightRanges(r.value, queryText, opts);
-        if (vr.length > 0) {
-          matchedOn.push("value");
-          valueRanges = vr;
-        }
+        if (vr.length > 0) { matchedOn.push("value"); valueRanges = vr; }
       }
     }
 
-    if (matchedOn.length === 0 && !isMongo) {
-      matchedOn.push("value");
-    }
+    if (matchedOn.length === 0 && !isMongo) matchedOn.push("value");
 
     matches.push({
       pathStr: r.pathStr,
-      path: [], // populated lazily or left empty as not needed for virtual list
+      path: [],
       key,
       isIndex,
       value: nativeValue,
@@ -224,12 +208,10 @@ export function mapDuckDbRowsToMatches(
       valueRanges,
     });
 
-    // Populate autoExpand paths
+    // Collect ancestor paths for auto-expand
     autoExpand.add("$");
-    let pStr = r.pathStr;
-    // Ancestors can be collected:
-    // e.g. "$[0].details.user" -> "$", "$[0]", "$[0].details"
     let i = 1;
+    const pStr = r.pathStr;
     while (i < pStr.length) {
       if (pStr[i] === ".") {
         const nextDot = pStr.indexOf(".", i + 1);
@@ -237,7 +219,6 @@ export function mapDuckDbRowsToMatches(
         let next = -1;
         if (nextDot !== -1 && nextBracket !== -1) next = Math.min(nextDot, nextBracket);
         else next = nextDot !== -1 ? nextDot : nextBracket;
-
         if (next === -1) break;
         autoExpand.add(pStr.substring(0, next));
         i = next;

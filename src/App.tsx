@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useDeferredValue } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Header from "./components/Header";
 import SourceControls from "./components/SourceControls";
 import SearchControls from "./components/SearchControls";
@@ -8,53 +8,116 @@ import TreePanel from "./components/TreePanel";
 import SqlConsole from "./components/SqlConsole";
 import LightningZap from "./components/LightningZap";
 import { sampleJsonText } from "./lib/sampleData";
-import { computeStats, defaultExpanded } from "./lib/jsonTools";
+import { computeStats, defaultExpanded, allContainerPaths } from "./lib/jsonTools";
+import { flattenTree } from "./lib/flattenTree";
 import { useJsonWorker } from "./lib/useJsonWorker";
 import { registerFileInDuckDB } from "./lib/duckdb";
-import type { SearchOptions, JsonStats, MatchRecord, FindResult } from "./lib/types";
+import type { SearchOptions, JsonStats, MatchRecord, FindResult, JsonValue } from "./lib/types";
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Merge set B into set A. Returns A unchanged (same reference) when nothing
+ * was actually added — avoids triggering downstream effects/memos.
+ */
 function mergeSets(a: Set<string>, b: Set<string>): Set<string> {
-  let changed = false;
+  // Fast path: if every element of b is already in a, return a as-is.
+  let allPresent = true;
+  b.forEach((v) => { if (!a.has(v)) { allPresent = false; } });
+  if (allPresent) return a;
+
   const next = new Set(a);
-  b.forEach((v) => {
-    if (!next.has(v)) {
-      next.add(v);
-      changed = true;
-    }
-  });
-  return changed ? next : a;
+  b.forEach((v) => next.add(v));
+  return next;
 }
+
+function getPathAncestors(pathStr: string): string[] {
+  const ancestors: string[] = ["$"];
+  if (pathStr === "$") return ancestors;
+  let i = 1;
+  while (i < pathStr.length) {
+    if (pathStr[i] === ".") {
+      const nextDot = pathStr.indexOf(".", i + 1);
+      const nextBracket = pathStr.indexOf("[", i + 1);
+      let next = -1;
+      if (nextDot !== -1 && nextBracket !== -1) next = Math.min(nextDot, nextBracket);
+      else next = nextDot !== -1 ? nextDot : nextBracket;
+      if (next === -1) { ancestors.push(pathStr); break; }
+      ancestors.push(pathStr.substring(0, next));
+      i = next;
+    } else if (pathStr[i] === "[") {
+      const close = pathStr.indexOf("]", i + 1);
+      if (close === -1) break;
+      ancestors.push(pathStr.substring(0, close + 1));
+      i = close + 1;
+    } else {
+      i++;
+    }
+  }
+  return ancestors;
+}
+
+// Parse sampleData once at module level so the initial state is free.
+const INITIAL_JSON = (() => {
+  try { return JSON.parse(sampleJsonText) as JsonValue; } catch { return null; }
+})();
+
+// ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
   const { send } = useJsonWorker();
 
+  // ── Source state ──────────────────────────────────────────────────────────
   const [draftText, setDraftText] = useState(sampleJsonText);
   const [hasData, setHasData] = useState(true);
   const [committedSize, setCommittedSize] = useState(() => new Blob([sampleJsonText]).size);
   const [parseError, setParseError] = useState<string | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [processing, setProcessing] = useState(false);
-  
-  // Tab layout state
-  const [activeTab, setActiveTab] = useState<"tree" | "sql">("tree");
 
-  // Lightning zap trigger — increment to fire a burst
+  /**
+   * The parsed JSON root lives on the MAIN THREAD.
+   * flattenTree runs synchronously via useMemo — zero worker round-trips.
+   */
+  const [jsonRoot, setJsonRoot] = useState<JsonValue | null>(INITIAL_JSON);
+
+  // ── Tab / animation state ─────────────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState<"tree" | "sql">("tree");
   const [zapTrigger, setZapTrigger] = useState(0);
   const [zapOrigin, setZapOrigin] = useState<{ x: number; y: number } | undefined>(undefined);
 
+  // ── Tree expansion state ──────────────────────────────────────────────────
   const [expanded, setExpanded] = useState<Set<string>>(() => {
-    // Parse sample data synchronously just for initial expanded paths
-    try {
-      return defaultExpanded(JSON.parse(sampleJsonText));
-    } catch {
-      return new Set(["$"]);
-    }
+    try { return defaultExpanded(INITIAL_JSON); }
+    catch { return new Set(["$"]); }
   });
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
-  const [flatRows, setFlatRows] = useState<any[]>([]);
 
+  /**
+   * Flat rows for the virtual list — computed synchronously on the main thread.
+   * No worker round-trip, no postMessage serialization overhead.
+   * React will batch this memo with the render that triggered it.
+   */
+  const flatRows = useMemo(
+    () => flattenTree(jsonRoot, expanded),
+    [jsonRoot, expanded]
+  );
+
+  // ── Search state ──────────────────────────────────────────────────────────
   const [query, setQuery] = useState("");
-  const deferredQuery = useDeferredValue(query);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [pendingQuery, setPendingQuery] = useState("");
+
+  const handleQueryChange = useCallback((q: string) => {
+    setQuery(q);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!q.trim()) {
+      // Clear immediately — no debounce needed for empty
+      setPendingQuery("");
+      return;
+    }
+    debounceRef.current = setTimeout(() => setPendingQuery(q), 200);
+  }, []);
 
   const [options, setOptions] = useState<SearchOptions>({
     mode: "both",
@@ -64,16 +127,11 @@ export default function App() {
   const [activeIndex, setActiveIndex] = useState(-1);
   const [scrollToId, setScrollToId] = useState<string | null>(null);
 
-  // Stats — updated alongside committed
   const [stats, setStats] = useState<JsonStats>(() => {
-    try {
-      return computeStats(JSON.parse(sampleJsonText), committedSize);
-    } catch {
-      return computeStats(null, 0);
-    }
+    try { return computeStats(INITIAL_JSON, new Blob([sampleJsonText]).size); }
+    catch { return computeStats(null, 0); }
   });
 
-  // Search results managed separately so they can come from the worker
   const [findResult, setFindResult] = useState<FindResult>({
     matches: [],
     autoExpand: new Set(),
@@ -81,122 +139,39 @@ export default function App() {
   });
 
   const [searching, setSearching] = useState(false);
+  const [lastSearchMs, setLastSearchMs] = useState<number | null>(null);
 
-  // Track the latest search request to ignore stale results
   const searchGenRef = useRef(0);
   const parseGenRef = useRef(0);
 
-  // ─── Initial Load ────────────────────────────────────────────────────────
+  // ─── Initial load ──────────────────────────────────────────────────────────
+  // Send sample data to the worker's DuckDB (for SQL search).
+  // flattenTree + parse happen on main thread — no "flatten" message needed.
   useEffect(() => {
-    // Register initial sample data in DuckDB
+    send({ type: "parse", text: sampleJsonText });
     const blob = new Blob([sampleJsonText], { type: "application/json" });
     registerFileInDuckDB(blob, "sift_data.json").catch(console.error);
-
-    // Sync worker state with sample data
-    send({ type: "parse", text: sampleJsonText });
   }, [send]);
 
-  // ─── Flattening via worker ───────────────────────────────────────────────
-  useEffect(() => {
-    if (!hasData) {
-      setFlatRows([]);
-      return;
-    }
-    send({ type: "flatten", expandedPaths: Array.from(expanded) }).then((res) => {
-      if (res.type === "flatten") {
-        setFlatRows(res.flatRows);
-      }
-    });
-  }, [expanded, hasData, send]);
-
-  // ─── Core: apply text via worker ─────────────────────────────────────────
-  const applyTextWorker = useCallback(
-    async (text: string, origin?: { x: number; y: number }) => {
-      const gen = ++parseGenRef.current;
-      setProcessing(true);
-      try {
-        const res = await send({ type: "parse", text });
-        if (gen !== parseGenRef.current) return; // stale
-
-        if (res.type === "parse") {
-          if (res.error) {
-            setParseError(res.error);
-            setProcessing(false);
-            return;
-          }
-          setHasData(true);
-          setCommittedSize(res.sizeBytes);
-          setStats(res.stats);
-          setParseError(null);
-          setExpanded(new Set(res.defaultExpanded));
-
-          // Register in DuckDB
-          const blob = new Blob([text], { type: "application/json" });
-          registerFileInDuckDB(blob, "sift_data.json").catch(console.error);
-
-          // 🎉 Fire the lightning zap!
-          setZapOrigin(origin);
-          setZapTrigger((t) => t + 1);
-        }
-      } finally {
-        if (gen === parseGenRef.current) setProcessing(false);
-      }
-    },
-    [send]
-  );
-
-  // ─── Core: apply File via worker (streaming-like OPFS & postMessage) ─────
-  const applyFileWorker = useCallback(
-    async (file: File, origin?: { x: number; y: number }) => {
-      const gen = ++parseGenRef.current;
-      setProcessing(true);
-      setParseError(null);
-      try {
-        const res = await send({ type: "parse", file });
-        if (gen !== parseGenRef.current) return; // stale
-
-        if (res.type === "parse") {
-          if (res.error) {
-            setParseError(res.error);
-            setProcessing(false);
-            return;
-          }
-          setHasData(true);
-          setCommittedSize(res.sizeBytes);
-          setStats(res.stats);
-          setParseError(null);
-          setExpanded(new Set(res.defaultExpanded));
-
-          // Register in DuckDB
-          registerFileInDuckDB(file, "sift_data.json").catch(console.error);
-
-          // 🎉 Fire the lightning zap!
-          setZapOrigin(origin);
-          setZapTrigger((t) => t + 1);
-        }
-      } finally {
-        if (gen === parseGenRef.current) setProcessing(false);
-      }
-    },
-    [send]
-  );
-
-  // ─── Search via worker ────────────────────────────────────────────────────
+  // ─── Search via DuckDB worker ──────────────────────────────────────────────
   useEffect(() => {
     const gen = ++searchGenRef.current;
-    const q = deferredQuery.trim();
+    const q = pendingQuery.trim();
 
     if (!q || !hasData) {
       setFindResult({ matches: [], autoExpand: new Set(), error: null });
       setSearching(false);
+      setLastSearchMs(null);
       return;
     }
 
     setSearching(true);
+
     send({ type: "search", query: q, options }).then((res) => {
-      if (gen !== searchGenRef.current) return;
+      if (gen !== searchGenRef.current) return;   // stale — discard
       setSearching(false);
       if (res.type === "search") {
+        setLastSearchMs(res.durationMs ?? null);
         setFindResult({
           matches: res.matches as MatchRecord[],
           autoExpand: new Set(res.autoExpand),
@@ -205,81 +180,116 @@ export default function App() {
       }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasData, deferredQuery, options.mode, options.caseSensitive, options.regex]);
+  }, [hasData, pendingQuery, options.mode, options.caseSensitive, options.regex]);
 
-function getPathAncestors(pathStr: string): string[] {
-  const ancestors: string[] = ["$"];
-  if (pathStr === "$") return ancestors;
-  
-  let current = "$";
-  let i = 1;
-  while (i < pathStr.length) {
-    if (pathStr[i] === ".") {
-      const nextDot = pathStr.indexOf(".", i + 1);
-      const nextBracket = pathStr.indexOf("[", i + 1);
-      let next = -1;
-      if (nextDot !== -1 && nextBracket !== -1) next = Math.min(nextDot, nextBracket);
-      else next = nextDot !== -1 ? nextDot : nextBracket;
-      
-      if (next === -1) {
-        ancestors.push(pathStr);
-        break;
-      } else {
-        current = pathStr.substring(0, next);
-        ancestors.push(current);
-        i = next;
-      }
-    } else if (pathStr[i] === "[") {
-      const closeBracket = pathStr.indexOf("]", i + 1);
-      if (closeBracket === -1) break;
-      current = pathStr.substring(0, closeBracket + 1);
-      ancestors.push(current);
-      i = closeBracket + 1;
-    } else {
-      i++;
-    }
-  }
-  return ancestors;
-}
-
-  // When find result changes, scroll to first match and auto-expand if results are reasonably small (< 150)
+  // ─── Auto-expand first match on new results ────────────────────────────────
+  // KEY CHANGE: we only expand the FIRST match's ancestors (a tiny Set of 2-5
+  // paths), not findResult.autoExpand which can be thousands of entries.
+  // This makes setExpanded very cheap — mergeSets returns the same reference
+  // when all ancestors are already expanded (the common case after a few chars).
   useEffect(() => {
     const matchesCount = findResult.matches.length;
     if (matchesCount > 0) {
       setActiveIndex(0);
       setScrollToId(findResult.matches[0].pathStr);
-      
-      // Auto expand ALL matches only if the match set is small to prevent rendering freeze
-      if (matchesCount < 150 && findResult.autoExpand.size > 0) {
-        setExpanded((prev) => mergeSets(prev, findResult.autoExpand));
-      } else {
-        // Expand ONLY the first match's ancestors
-        const firstMatchPath = findResult.matches[0].pathStr;
-        const firstAncestors = new Set(getPathAncestors(firstMatchPath));
-        setExpanded((prev) => mergeSets(prev, firstAncestors));
-      }
+      const firstAncestors = new Set(getPathAncestors(findResult.matches[0].pathStr));
+      setExpanded((prev) => mergeSets(prev, firstAncestors));
     } else {
       setActiveIndex(-1);
       setScrollToId(null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findResult]);
 
-  // When active index changes, make sure its ancestors are expanded so it can scroll into view
+  // ─── Expand active match ancestors on navigation ───────────────────────────
   useEffect(() => {
     if (activeIndex >= 0 && findResult.matches[activeIndex]) {
       const activePath = findResult.matches[activeIndex].pathStr;
-      const activeAncestors = new Set(getPathAncestors(activePath));
-      setExpanded((prev) => mergeSets(prev, activeAncestors));
+      setExpanded((prev) => mergeSets(prev, new Set(getPathAncestors(activePath))));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeIndex]);
 
-  // ─── Handlers ────────────────────────────────────────────────────────────
+  // ─── Parse text ────────────────────────────────────────────────────────────
+  const applyTextWorker = useCallback(
+    async (text: string, origin?: { x: number; y: number }) => {
+      const gen = ++parseGenRef.current;
+      setProcessing(true);
+      try {
+        // Parse on main thread immediately (for flattenTree via useMemo)
+        let parsed: JsonValue | null = null;
+        try { parsed = JSON.parse(text.trim()) as JsonValue; }
+        catch { /* worker will report the error */ }
 
-  const handleDraftChange = useCallback((text: string) => {
-    setDraftText(text);
-  }, []);
+        const res = await send({ type: "parse", text });
+        if (gen !== parseGenRef.current) return;
+
+        if (res.type === "parse") {
+          if (res.error) { setParseError(res.error); setProcessing(false); return; }
+          setHasData(true);
+          setCommittedSize(res.sizeBytes);
+          setStats(res.stats);
+          setParseError(null);
+          setJsonRoot(parsed);
+          setExpanded(new Set(res.defaultExpanded));
+          const blob = new Blob([text], { type: "application/json" });
+          registerFileInDuckDB(blob, "sift_data.json").catch(console.error);
+          setZapOrigin(origin);
+          setZapTrigger((t) => t + 1);
+        }
+      } finally {
+        if (gen === parseGenRef.current) setProcessing(false);
+      }
+    },
+    [send]
+  );
+
+  // ─── Parse file ────────────────────────────────────────────────────────────
+  const applyFileWorker = useCallback(
+    async (file: File, origin?: { x: number; y: number }) => {
+      const gen = ++parseGenRef.current;
+      setProcessing(true);
+      setParseError(null);
+      try {
+        // Read + parse on main thread in parallel with the worker parse
+        const text = await file.text();
+        let parsed: JsonValue | null = null;
+        try { parsed = JSON.parse(text.trim()) as JsonValue; }
+        catch { /* worker will report the error */ }
+
+        const res = await send({ type: "parse", file });
+        if (gen !== parseGenRef.current) return;
+
+        if (res.type === "parse") {
+          if (res.error) { setParseError(res.error); setProcessing(false); return; }
+          setHasData(true);
+          setCommittedSize(res.sizeBytes);
+          setStats(res.stats);
+          setParseError(null);
+          setJsonRoot(parsed);
+          setExpanded(new Set(res.defaultExpanded));
+          registerFileInDuckDB(file, "sift_data.json").catch(console.error);
+          setZapOrigin(origin);
+          setZapTrigger((t) => t + 1);
+        }
+      } finally {
+        if (gen === parseGenRef.current) setProcessing(false);
+      }
+    },
+    [send]
+  );
+
+  // ─── Match map (memoised) ──────────────────────────────────────────────────
+  const matchMap = useMemo(
+    () => new Map(findResult.matches.map((m) => [m.pathStr, m] as const)),
+    [findResult]
+  );
+
+  const activeId = activeIndex >= 0 ? findResult.matches[activeIndex]?.pathStr ?? null : null;
+
+  // ─── Handlers ─────────────────────────────────────────────────────────────
+
+  const handleDraftChange = useCallback((text: string) => setDraftText(text), []);
 
   const handlePasteApply = useCallback(
     (text: string) => {
@@ -307,17 +317,17 @@ function getPathAncestors(pathStr: string): string[] {
   const handleClear = useCallback(() => {
     setDraftText("");
     setHasData(false);
+    setJsonRoot(null);
     setCommittedSize(0);
     setStats(computeStats(null, 0));
     setParseError(null);
     setExpanded(new Set());
-    setFlatRows([]);
+    setLastSearchMs(null);
     parseGenRef.current++;
   }, []);
 
   const handleFile = useCallback(
     (file: File) => {
-      // Direct File upload bypasses main-thread readAsText completely!
       setDraftText(`[File: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)]`);
       setEditorOpen(false);
       void applyFileWorker(file, { x: window.innerWidth / 2, y: 56 });
@@ -339,56 +349,29 @@ function getPathAncestors(pathStr: string): string[] {
   const toggleExpand = useCallback((pathStr: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(pathStr)) next.delete(pathStr);
-      else next.add(pathStr);
+      if (next.has(pathStr)) next.delete(pathStr); else next.add(pathStr);
       return next;
     });
   }, []);
 
   const copyPath = useCallback((pathStr: string) => {
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(pathStr).catch(() => {});
-    }
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(pathStr).catch(() => {});
     setCopiedPath(pathStr);
-    window.setTimeout(() => {
-      setCopiedPath((p) => (p === pathStr ? null : p));
-    }, 1400);
+    window.setTimeout(() => setCopiedPath((p) => (p === pathStr ? null : p)), 1400);
   }, []);
 
-  const handleExpandAll = useCallback(async () => {
-    if (!hasData) return;
-    const res = await send({ type: "expandAll" });
-    if (res.type === "expandAll") {
-      setExpanded(new Set(res.paths));
-    }
-  }, [hasData, send]);
+  const handleExpandAll = useCallback(() => {
+    if (!hasData || !jsonRoot) return;
+    setExpanded(allContainerPaths(jsonRoot));
+  }, [hasData, jsonRoot]);
 
-  const handleCollapseAll = useCallback(() => {
-    setExpanded(new Set());
-  }, []);
-
-  const handleToggleEditor = useCallback(() => {
-    setEditorOpen((v) => !v);
-  }, []);
-
-  const handleScrollDone = useCallback(() => {
-    setScrollToId(null);
-  }, []);
-
-  const matchMap = useMemo(() => {
-    return new Map(findResult.matches.map((m) => [m.pathStr, m] as const));
-  }, [findResult]);
-
-  const activeId = activeIndex >= 0 ? findResult.matches[activeIndex]?.pathStr ?? null : null;
+  const handleCollapseAll = useCallback(() => setExpanded(new Set()), []);
+  const handleToggleEditor = useCallback(() => setEditorOpen((v) => !v), []);
+  const handleScrollDone = useCallback(() => setScrollToId(null), []);
 
   return (
     <div className="min-h-screen bg-riverbed font-sans text-parchment">
-      {/* ⚡ Wow feature: lightning zap burst on parse complete */}
-      <LightningZap
-        trigger={zapTrigger}
-        originX={zapOrigin?.x}
-        originY={zapOrigin?.y}
-      />
+      <LightningZap trigger={zapTrigger} originX={zapOrigin?.x} originY={zapOrigin?.y} />
 
       <Header
         nodeCount={stats.nodes}
@@ -415,7 +398,7 @@ function getPathAncestors(pathStr: string): string[] {
 
           <SearchControls
             query={query}
-            onQueryChange={setQuery}
+            onQueryChange={handleQueryChange}
             options={options}
             onOptionsChange={setOptions}
             matchCount={findResult.matches.length}
@@ -424,6 +407,7 @@ function getPathAncestors(pathStr: string): string[] {
             onPrev={() => goToMatch(activeIndex - 1)}
             error={findResult.error}
             searching={searching}
+            lastSearchMs={lastSearchMs}
           />
 
           <StatStrip stats={stats} />
@@ -442,7 +426,6 @@ function getPathAncestors(pathStr: string): string[] {
         </aside>
 
         <section className="min-h-[480px] flex-1 lg:h-full flex flex-col gap-3">
-          {/* Tab selector */}
           <div className="flex border-b border-stone/50">
             <button
               onClick={() => setActiveTab("tree")}

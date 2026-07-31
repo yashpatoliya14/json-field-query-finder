@@ -13,6 +13,7 @@ interface SearchControlsProps {
   onPrev: () => void;
   error: string | null;
   searching: boolean;
+  lastSearchMs: number | null;
 }
 
 const MODES: { id: SearchMode; label: string; short: string }[] = [
@@ -32,18 +33,24 @@ export default function SearchControls({
   onPrev,
   error,
   searching,
+  lastSearchMs,
 }: SearchControlsProps) {
   const inputRef = useRef<HTMLInputElement>(null);
-
   const hasQuery = query.trim().length > 0;
 
   return (
     <div className="search-panel rounded-xl border border-stone/80 bg-panel overflow-hidden">
       {/* ── Search input row ── */}
-      <div className={`search-input-wrap flex items-center gap-2.5 px-3 py-2.5 transition-all duration-200 ${hasQuery ? "border-b border-stone/60" : ""}`}>
+      <div
+        className={`search-input-wrap flex items-center gap-2.5 px-3 py-2.5 transition-all duration-200 ${
+          hasQuery ? "border-b border-stone/60" : ""
+        }`}
+      >
         <div className="relative flex shrink-0">
           <SearchIcon
-            className={`h-4 w-4 transition-colors duration-200 ${hasQuery ? "text-teal" : "text-sediment"}`}
+            className={`h-4 w-4 transition-colors duration-200 ${
+              hasQuery ? "text-teal" : "text-sediment"
+            }`}
           />
           {searching && (
             <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-teal animate-ping" />
@@ -57,8 +64,7 @@ export default function SearchControls({
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
-              if (e.shiftKey) onPrev();
-              else onNext();
+              if (e.shiftKey) onPrev(); else onNext();
             }
             if (e.key === "Escape" && query) {
               e.preventDefault();
@@ -73,7 +79,7 @@ export default function SearchControls({
           autoComplete="off"
         />
 
-        {/* Match counter badge — inline, no layout shift */}
+        {/* Match counter badge */}
         <div className="flex shrink-0 items-center gap-1.5">
           {hasQuery && !error && (
             <span
@@ -89,10 +95,7 @@ export default function SearchControls({
           {query && (
             <button
               type="button"
-              onClick={() => {
-                onQueryChange("");
-                inputRef.current?.focus();
-              }}
+              onClick={() => { onQueryChange(""); inputRef.current?.focus(); }}
               aria-label="Clear search"
               className="text-sediment-dim hover:text-rust transition-colors"
             >
@@ -102,26 +105,43 @@ export default function SearchControls({
         </div>
       </div>
 
-      {/* ── Match nav + error ── */}
+      {/* ── Match nav + timing ── */}
       {hasQuery && (
         <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-stone/60">
-          <span
-            className={`font-mono text-[11.5px] transition-colors duration-200 ${
-              error
-                ? "text-rust"
+          <div className="flex items-center gap-2 min-w-0">
+            <span
+              className={`font-mono text-[11.5px] transition-colors duration-200 ${
+                error
+                  ? "text-rust"
+                  : matchCount > 0
+                  ? "text-parchment/70"
+                  : "text-sediment"
+              }`}
+            >
+              {error
+                ? "⚠ Invalid regex"
                 : matchCount > 0
-                ? "text-parchment/70"
-                : "text-sediment"
-            }`}
-          >
-            {error
-              ? "⚠ Invalid regex"
-              : matchCount > 0
-              ? `${matchCount.toLocaleString()} match${matchCount === 1 ? "" : "es"}`
-              : searching
-              ? "Searching…"
-              : "No matches"}
-          </span>
+                ? `${matchCount.toLocaleString()} match${matchCount === 1 ? "" : "es"}`
+                : searching
+                ? "Searching…"
+                : "No matches"}
+            </span>
+
+            {/* ⚡ Search duration badge — shown after a search completes */}
+            {!searching && lastSearchMs !== null && hasQuery && (
+              <span
+                title="DuckDB search time"
+                className="inline-flex items-center gap-0.5 rounded-md bg-teal/10 border border-teal/25 px-1.5 py-0.5 font-mono text-[10px] text-teal/80 leading-none"
+              >
+                ⚡{" "}
+                {lastSearchMs < 1
+                  ? "<1 ms"
+                  : lastSearchMs < 1000
+                  ? `${Math.round(lastSearchMs)} ms`
+                  : `${(lastSearchMs / 1000).toFixed(1)} s`}
+              </span>
+            )}
+          </div>
 
           {!error && matchCount > 0 && (
             <div className="flex items-center gap-0.5">
@@ -149,7 +169,6 @@ export default function SearchControls({
 
       {/* ── Options ── */}
       <div className="flex flex-wrap items-center gap-2 px-3 py-2.5">
-        {/* Mode pill switcher */}
         <div className="mode-switcher relative flex items-center overflow-hidden rounded-lg border border-stone/80 bg-riverbed">
           {MODES.map((m) => (
             <button
@@ -157,12 +176,9 @@ export default function SearchControls({
               type="button"
               onClick={() => onOptionsChange({ ...options, mode: m.id })}
               className={`relative z-10 px-2.5 py-1 font-sans text-[11px] transition-all duration-200 ${
-                options.mode === m.id
-                  ? "text-teal font-medium"
-                  : "text-sediment hover:text-parchment"
+                options.mode === m.id ? "text-teal font-medium" : "text-sediment hover:text-parchment"
               }`}
             >
-              {/* Active indicator */}
               {options.mode === m.id && (
                 <span
                   className="absolute inset-0 rounded-md bg-teal/15 border border-teal/30"
@@ -174,7 +190,6 @@ export default function SearchControls({
           ))}
         </div>
 
-        {/* Case sensitivity toggle */}
         <button
           type="button"
           onClick={() => onOptionsChange({ ...options, caseSensitive: !options.caseSensitive })}
@@ -189,7 +204,6 @@ export default function SearchControls({
           Aa
         </button>
 
-        {/* Regex toggle */}
         <button
           type="button"
           onClick={() => onOptionsChange({ ...options, regex: !options.regex })}
@@ -204,9 +218,7 @@ export default function SearchControls({
           .*
         </button>
 
-        {error && (
-          <p className="w-full font-sans text-[11px] text-rust">{error}</p>
-        )}
+        {error && <p className="w-full font-sans text-[11px] text-rust">{error}</p>}
       </div>
     </div>
   );

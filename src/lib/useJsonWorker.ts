@@ -1,6 +1,6 @@
 /**
- * useJsonWorker — thin hook that talks to the JSON web worker.
- * Returns send() which posts a request and returns a Promise<WorkerResponse>.
+ * useJsonWorker — thin hook bridging React and the JSON web worker.
+ * The worker owns DuckDB; this hook is just a typed postMessage wrapper.
  */
 import { useEffect, useRef, useCallback } from "react";
 import type { WorkerSend, WorkerResponse } from "./jsonWorker";
@@ -25,6 +25,10 @@ export function useJsonWorker() {
         pendingRef.current.delete(res.id);
         resolve(res);
       }
+    };
+
+    worker.onerror = (e) => {
+      console.error("[jsonWorker] uncaught error:", e.message);
     };
 
     return () => {

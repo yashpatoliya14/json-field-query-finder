@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useRef } from "react";
 import type { MatchRecord, Range } from "../lib/types";
 import type { FlatRow, ClosingRow } from "../lib/flattenTree";
 import type { VirtualRow as VirtualRowType } from "../lib/flattenTree";
@@ -31,9 +31,7 @@ function KeyLabel({
   isIndex: boolean;
   ranges: Range[];
 }) {
-  if (isIndex) {
-    return <span className="text-sediment-dim">{nodeKey}</span>;
-  }
+  if (isIndex) return <span className="text-sediment-dim">{nodeKey}</span>;
   return (
     <span className="text-teal">
       "<Highlight text={String(nodeKey)} ranges={ranges} />"
@@ -41,7 +39,13 @@ function KeyLabel({
   );
 }
 
-function LeafValueDisplay({ value, ranges }: { value: unknown; ranges: Range[] }) {
+function LeafValueDisplay({
+  value,
+  ranges,
+}: {
+  value: unknown;
+  ranges: Range[];
+}) {
   if (typeof value === "string") {
     return (
       <span className="text-parchment/90">
@@ -50,7 +54,8 @@ function LeafValueDisplay({ value, ranges }: { value: unknown; ranges: Range[] }
     );
   }
   const text = value === null ? "null" : String(value);
-  const type = value === null ? "null" : typeof value === "boolean" ? "boolean" : "number";
+  const type =
+    value === null ? "null" : typeof value === "boolean" ? "boolean" : "number";
   return (
     <span className={valueClasses(type)}>
       <Highlight text={text} ranges={ranges} />
@@ -58,49 +63,55 @@ function LeafValueDisplay({ value, ranges }: { value: unknown; ranges: Range[] }
   );
 }
 
+/**
+ * Stable refs passed through rowProps so changes to activeId/copiedPath
+ * never invalidate the rowProps object itself — only the 2 affected rows re-render.
+ */
+export interface TreeStableRefs {
+  activeIdRef: React.RefObject<string | null>;
+  copiedPathRef: React.RefObject<string | null>;
+  matchMapRef: React.RefObject<Map<string, MatchRecord>>;
+}
+
 export interface TreeRowProps {
   flatRows: VirtualRowType[];
-  matchMap: Map<string, MatchRecord>;
-  activeId: string | null;
+  stableRefs: TreeStableRefs;
   onToggle: (pathStr: string) => void;
   onCopyPath: (pathStr: string) => void;
-  copiedPath: string | null;
 }
 
 function TreeRowComponent({
   index,
   style,
   flatRows,
-  matchMap,
-  activeId,
+  stableRefs,
   onToggle,
   onCopyPath,
-  copiedPath,
 }: {
   index: number;
   style: React.CSSProperties;
 } & TreeRowProps): React.ReactElement | null {
   const row = flatRows[index];
 
-  // Closing brace row
+  // Closing brace row — never active, never matched
   if (row.kind === "closing") {
     const cr = row as ClosingRow;
-    const comma = !cr.isLast ? "," : "";
     return (
       <div
         style={{ ...style, paddingLeft: cr.depth * INDENT + 6 }}
         className="font-mono text-[13px] leading-[1.55] text-sediment-dim"
       >
         {cr.closeBrace}
-        {comma}
+        {!cr.isLast ? "," : ""}
       </div>
     );
   }
 
   const fr = row as FlatRow;
-  const match = matchMap.get(fr.id);
-  const isActive = activeId === fr.id;
-  const isCopied = copiedPath === fr.id;
+  // Read from refs — no dependency, never causes re-render of this component
+  const match = stableRefs.matchMapRef.current?.get(fr.id);
+  const isActive = stableRefs.activeIdRef.current === fr.id;
+  const isCopied = stableRefs.copiedPathRef.current === fr.id;
   const indentPx = fr.depth * INDENT;
   const comma = !fr.isLast ? "," : "";
 
@@ -130,7 +141,6 @@ function TreeRowComponent({
     </button>
   );
 
-  // Leaf node
   if (fr.kind === "leaf") {
     return (
       <div
@@ -143,7 +153,11 @@ function TreeRowComponent({
         </span>
         {fr.nodeKey !== null && (
           <>
-            <KeyLabel nodeKey={fr.nodeKey} isIndex={fr.isIndex} ranges={match?.keyRanges ?? []} />
+            <KeyLabel
+              nodeKey={fr.nodeKey}
+              isIndex={fr.isIndex}
+              ranges={match?.keyRanges ?? []}
+            />
             <span className="text-sediment-dim">:</span>
           </>
         )}
@@ -154,7 +168,6 @@ function TreeRowComponent({
     );
   }
 
-  // Empty container
   if (fr.kind === "empty") {
     return (
       <div
@@ -167,7 +180,11 @@ function TreeRowComponent({
         </span>
         {fr.nodeKey !== null && (
           <>
-            <KeyLabel nodeKey={fr.nodeKey} isIndex={fr.isIndex} ranges={match?.keyRanges ?? []} />
+            <KeyLabel
+              nodeKey={fr.nodeKey}
+              isIndex={fr.isIndex}
+              ranges={match?.keyRanges ?? []}
+            />
             <span className="text-sediment-dim">:</span>
           </>
         )}
@@ -181,19 +198,23 @@ function TreeRowComponent({
     );
   }
 
-  // Container (open or closed)
   const isOpen = fr.kind === "open";
   const countLabel = fr.isArr
     ? `${fr.entryCount} item${fr.entryCount === 1 ? "" : "s"}`
     : `${fr.entryCount} key${fr.entryCount === 1 ? "" : "s"}`;
 
-  const handleToggle = () => onToggle(fr.id);
-
   return (
-    <button
-      type="button"
+    <div
       id={fr.id}
-      onClick={handleToggle}
+      role="button"
+      tabIndex={0}
+      onClick={() => onToggle(fr.id)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onToggle(fr.id);
+        }
+      }}
       className={`${rowBase} ${rowState} ${rowActive} w-full cursor-pointer text-left`}
       style={{ ...style, paddingLeft: indentPx + 6 }}
       aria-expanded={isOpen}
@@ -203,14 +224,20 @@ function TreeRowComponent({
       />
       {fr.nodeKey !== null && (
         <>
-          <KeyLabel nodeKey={fr.nodeKey} isIndex={fr.isIndex} ranges={match?.keyRanges ?? []} />
+          <KeyLabel
+            nodeKey={fr.nodeKey}
+            isIndex={fr.isIndex}
+            ranges={match?.keyRanges ?? []}
+          />
           <span className="text-sediment-dim">:</span>
         </>
       )}
       <span className="text-sediment-dim">{fr.openBrace}</span>
       {!isOpen && (
         <>
-          <span className="italic text-sediment-dim/80">&nbsp;{countLabel}&nbsp;</span>
+          <span className="italic text-sediment-dim/80">
+            &nbsp;{countLabel}&nbsp;
+          </span>
           <span className="text-sediment-dim">
             {fr.closeBrace}
             {comma}
@@ -218,7 +245,7 @@ function TreeRowComponent({
         </>
       )}
       {copyButton}
-    </button>
+    </div>
   );
 }
 
