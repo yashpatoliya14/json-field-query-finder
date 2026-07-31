@@ -12,13 +12,21 @@ const STAT_CONFIG: {
   accent: string;
   bg: string;
 }[] = [
-  { key: "containers", label: "containers", accent: "text-teal", bg: "bg-teal/10" },
-  { key: "leaves",     label: "leaves",     accent: "text-signal", bg: "bg-signal/10" },
-  { key: "maxDepth",   label: "depth",      accent: "text-claim",  bg: "bg-claim/10" },
-  { key: "sizeBytes",  label: "size",       accent: "text-gold",   bg: "bg-gold/10" },
+  {
+    key: "containers",
+    label: "containers",
+    accent: "text-teal",
+    bg: "bg-teal/10",
+  },
+  { key: "leaves", label: "leaves", accent: "text-signal", bg: "bg-signal/10" },
+  { key: "maxDepth", label: "depth", accent: "text-claim", bg: "bg-claim/10" },
+  { key: "sizeBytes", label: "size", accent: "text-gold", bg: "bg-gold/10" },
 ];
 
-function getValue(key: keyof Omit<JsonStats, "nodes">, stats: JsonStats): string {
+function getValue(
+  key: keyof Omit<JsonStats, "nodes">,
+  stats: JsonStats,
+): string {
   if (key === "sizeBytes") return fmtBytes(stats.sizeBytes);
   return stats[key].toLocaleString();
 }
@@ -32,7 +40,7 @@ export default function StatStrip({ stats }: { stats: JsonStats }) {
           className={`group relative overflow-hidden rounded-lg border border-stone/80 bg-panel px-2 py-2 text-center transition-all hover:border-stone`}
         >
           {/* Subtle accent bar on top */}
-          <div className={`absolute inset-x-0 top-0 h-[2px] ${bg} opacity-60`} />
+          <div className={`absolute inset-x-0 top-0 h-0.5 ${bg} opacity-60`} />
           <div className={`font-mono text-[13px] font-medium ${accent}`}>
             {getValue(key, stats)}
           </div>

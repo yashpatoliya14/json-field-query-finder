@@ -95,7 +95,7 @@ function MatchRowComponentFn({
         {/* Key match row */}
         {m.matchedOn.includes("key") && (
           <div className="flex items-center gap-1.5 overflow-hidden">
-            <span className="shrink-0 rounded bg-teal-dim px-1 py-[1px] font-mono text-[9px] uppercase tracking-wide text-teal">
+            <span className="shrink-0 rounded bg-teal-dim px-1 py-px font-mono text-[9px] uppercase tracking-wide text-teal">
               key
             </span>
             <span className="truncate font-mono text-[11.5px] text-teal/80">
@@ -108,7 +108,7 @@ function MatchRowComponentFn({
         {m.matchedOn.includes("value") && (
           <div className="flex items-center gap-1.5 overflow-hidden">
             <span
-              className={`shrink-0 rounded px-1 py-[1px] font-mono text-[9px] uppercase tracking-wide ${chip.cls}`}
+              className={`shrink-0 rounded px-1 py-px font-mono text-[9px] uppercase tracking-wide ${chip.cls}`}
             >
               {chip.label}
             </span>

@@ -127,7 +127,7 @@ function TreeRowComponent({
       onClick={handleCopy}
       title="Copy path"
       aria-label={`Copy path ${fr.id}`}
-      className="ml-2 hidden shrink-0 items-center gap-1 rounded border border-stone px-1 py-[1px] text-[10px] text-sediment hover:border-teal hover:text-teal group-hover:flex"
+      className="ml-2 hidden shrink-0 items-center gap-1 rounded border border-stone px-1 py-px text-[10px] text-sediment hover:border-teal hover:text-teal group-hover:flex"
     >
       {isCopied ? (
         <span className="text-teal">copied</span>
