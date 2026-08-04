@@ -1,6 +1,6 @@
 import fs from "fs";
 
-const TARGET_SIZE = 50 * 1024 * 1024; // 50 MB
+const TARGET_SIZE = 500 * 1024 * 1024; // 50 MB
 const OUTPUT = "test_50mb.json";
 
 const stream = fs.createWriteStream(OUTPUT);
